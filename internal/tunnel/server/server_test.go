@@ -170,8 +170,8 @@ func buildIPv4(src, dst net.IP, payload []byte) []byte {
 	pkt := make([]byte, 20+len(payload))
 	pkt[0] = 0x45 // version=4, IHL=5
 	binary.BigEndian.PutUint16(pkt[2:4], uint16(20+len(payload)))
-	pkt[8] = 64    // TTL
-	pkt[9] = 0xfd  // arbitrary protocol number (no kernel processes it here)
+	pkt[8] = 64   // TTL
+	pkt[9] = 0xfd // arbitrary protocol number (no kernel processes it here)
 	copy(pkt[12:16], src.To4())
 	copy(pkt[16:20], dst.To4())
 	copy(pkt[20:], payload)
@@ -447,4 +447,3 @@ func TestServer_ShutsDownCleanlyIdle(t *testing.T) {
 	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0")
 	h.shutdown()
 }
-

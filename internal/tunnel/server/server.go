@@ -300,8 +300,13 @@ func (s *Server) sessionReader(sess *Session) {
 				s.log.Debug("bad control frame", "cn", sess.CN, "err", err)
 				continue
 			}
-			// We only expect keepalives from the client; ignore others.
-			_ = msg
+			switch msg.Type {
+			case tunnel.CtrlKeepalive:
+				// rx is proof of life — nothing else to do.
+			default:
+				s.log.Debug("ignoring unexpected control from client",
+					"cn", sess.CN, "type", msg.Type)
+			}
 
 		case tunnel.FrameData:
 			src, dst, err := parseIPv4SrcDst(body)
