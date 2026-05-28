@@ -48,6 +48,15 @@ type Config struct {
 	MTU        int           // 1380
 	TUNName    string        // "" → driver picks
 	Keepalive  time.Duration // 0 → off
+
+	// PushRoutes are CIDRs the server tells every client to install via
+	// the tunnel. Empty = server doesn't push routes (client keeps its
+	// existing routing table). Typical full-tunnel value: []string{"0.0.0.0/0"}.
+	PushRoutes []string
+
+	// PushDNS are resolver IPs the server tells every client to configure
+	// while the tunnel is up. Empty = no DNS push.
+	PushDNS []string
 }
 
 // Server holds the listener, TUN device, IP pool and session registry.
@@ -252,6 +261,8 @@ func (s *Server) handleConn(rawConn net.Conn) {
 		Gateway: s.cfg.Gateway,
 		Netmask: s.cfg.Netmask,
 		MTU:     s.cfg.MTU,
+		Routes:  s.cfg.PushRoutes,
+		DNS:     s.cfg.PushDNS,
 	})
 	if err != nil {
 		s.log.Error("build assign_ip", "err", err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 )
 
@@ -35,8 +36,78 @@ func TestControlRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAssignIP: %v", err)
 	}
-	if got != (AssignIP{IP: "10.8.0.2", Gateway: "10.8.0.1", Netmask: "255.255.255.0", MTU: 1380}) {
+	if !reflect.DeepEqual(got, AssignIP{IP: "10.8.0.2", Gateway: "10.8.0.1", Netmask: "255.255.255.0", MTU: 1380}) {
 		t.Fatalf("payload mismatch: %+v", got)
+	}
+}
+
+func TestAssignIPWithRoutesAndDNS(t *testing.T) {
+	want := AssignIP{
+		IP:      "10.8.0.2",
+		Gateway: "10.8.0.1",
+		Netmask: "255.255.255.0",
+		MTU:     1380,
+		Routes:  []string{"0.0.0.0/0", "10.0.0.0/8"},
+		DNS:     []string{"1.1.1.1", "9.9.9.9"},
+	}
+	msg, err := NewAssignIP(want)
+	if err != nil {
+		t.Fatalf("NewAssignIP: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := WriteControl(&buf, msg); err != nil {
+		t.Fatalf("WriteControl: %v", err)
+	}
+	_, body, err := ReadPacket(&buf)
+	if err != nil {
+		t.Fatalf("ReadPacket: %v", err)
+	}
+	decoded, err := DecodeControl(body)
+	if err != nil {
+		t.Fatalf("DecodeControl: %v", err)
+	}
+	got, err := ParseAssignIP(decoded)
+	if err != nil {
+		t.Fatalf("ParseAssignIP: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("roundtrip mismatch:\n  got=%+v\n want=%+v", got, want)
+	}
+}
+
+// TestAssignIPLegacyWire confirms a payload from an older server (no routes,
+// no dns fields) still parses cleanly — the new []string fields land as nil.
+func TestAssignIPLegacyWire(t *testing.T) {
+	const legacy = `{"type":"assign_ip","payload":{"ip":"10.8.0.5","gateway":"10.8.0.1","netmask":"255.255.255.0","mtu":1380}}`
+	msg, err := DecodeControl([]byte(legacy))
+	if err != nil {
+		t.Fatalf("DecodeControl: %v", err)
+	}
+	got, err := ParseAssignIP(msg)
+	if err != nil {
+		t.Fatalf("ParseAssignIP: %v", err)
+	}
+	if got.Routes != nil || got.DNS != nil {
+		t.Fatalf("legacy wire should decode with nil slices, got Routes=%v DNS=%v",
+			got.Routes, got.DNS)
+	}
+	if got.IP != "10.8.0.5" || got.MTU != 1380 {
+		t.Fatalf("legacy core fields lost: %+v", got)
+	}
+}
+
+// TestAssignIPOmitsEmpty verifies routes/dns don't bloat the wire when unused.
+func TestAssignIPOmitsEmpty(t *testing.T) {
+	msg, err := NewAssignIP(AssignIP{IP: "10.8.0.2", Gateway: "10.8.0.1", Netmask: "255.255.255.0", MTU: 1380})
+	if err != nil {
+		t.Fatalf("NewAssignIP: %v", err)
+	}
+	if bytes.Contains(msg.Payload, []byte("routes")) {
+		t.Fatalf("empty Routes leaked into wire: %s", msg.Payload)
+	}
+	if bytes.Contains(msg.Payload, []byte("dns")) {
+		t.Fatalf("empty DNS leaked into wire: %s", msg.Payload)
 	}
 }
 
