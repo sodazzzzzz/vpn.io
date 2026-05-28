@@ -32,9 +32,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
+	"github.com/govpn/internal/dns"
+	"github.com/govpn/internal/route"
 	"github.com/govpn/internal/tun"
 	"github.com/govpn/internal/tunnel"
 )
@@ -80,7 +83,9 @@ type Client struct {
 	tlsConfig *tls.Config
 
 	mu           sync.Mutex
-	configuredIP string // empty until first AssignIP triggers tun.Configure
+	configuredIP string         // empty until first AssignIP triggers tun.Configure
+	routes       *route.Manager // non-nil after first successful Install
+	resolvers    *dns.Manager   // non-nil after first successful Apply
 }
 
 // New constructs a Client. dev must already be Open()ed; ownership stays
@@ -133,12 +138,29 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 // returns; the caller's dev.Close() will unblock it. Run does not wait
 // on the poller — waiting would deadlock callers that defer dev.Close
 // after Run.
+//
+// Routes installed in the system routing table during the first successful
+// AssignIP are torn down on Run exit (success or failure), best effort.
 func (c *Client) Run(ctx context.Context) error {
 	outbound := make(chan []byte, outboundBufferDepth)
 
 	go c.runDevicePoller(ctx, outbound)
 
-	return c.runReconnectLoop(ctx, outbound)
+	err := c.runReconnectLoop(ctx, outbound)
+
+	c.mu.Lock()
+	rm := c.routes
+	dm := c.resolvers
+	c.routes = nil
+	c.resolvers = nil
+	c.mu.Unlock()
+	if dm != nil {
+		dm.Remove()
+	}
+	if rm != nil {
+		rm.Remove()
+	}
+	return err
 }
 
 // runDevicePoller drains dev.Read into outbound. Exits when dev.Read
@@ -248,10 +270,83 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
 
+	if err := c.ensureRoutes(assign, tlsConn.RemoteAddr()); err != nil {
+		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
+	}
+
+	if err := c.ensureDNS(assign); err != nil {
+		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
+	}
+
 	// Hand the live conn to runSession; it owns the connection from here
 	// on (and will Close it on its own way out).
 	closeConn = false
 	return c.runSession(ctx, tlsConn, outbound)
+}
+
+// ensureRoutes installs the pushed routes on the first successful AssignIP.
+// On subsequent reconnects it's a no-op — we don't try to update the
+// routing table mid-flight (the original default gateway may have changed,
+// and a fresh install would need an OS-aware "is current pin-hole still
+// valid?" check that's out of scope here).
+//
+// If AssignIP carries no routes, this is a no-op too — server is asking
+// for a private-LAN-only setup.
+func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.routes != nil {
+		return nil
+	}
+	if len(a.Routes) == 0 {
+		return nil
+	}
+
+	tunGW, err := netip.ParseAddr(a.Gateway)
+	if err != nil {
+		return fmt.Errorf("parse tunnel gateway %q: %w", a.Gateway, err)
+	}
+
+	tcp, ok := remote.(*net.TCPAddr)
+	if !ok || tcp == nil {
+		return fmt.Errorf("remote addr is not TCPAddr (%T)", remote)
+	}
+	serverIP, ok := netip.AddrFromSlice(tcp.IP)
+	if !ok {
+		return fmt.Errorf("invalid server IP %v", tcp.IP)
+	}
+	serverIP = serverIP.Unmap() // 4-in-6 → 4
+
+	mgr := route.New(c.log, c.dev.Name(), tunGW, serverIP)
+	if err := mgr.Install(a.Routes); err != nil {
+		return err
+	}
+	c.routes = mgr
+	c.log.Info("system routes installed", "count", len(a.Routes), "via", tunGW, "server-pinhole", serverIP)
+	return nil
+}
+
+// ensureDNS pushes the resolvers from AssignIP into the OS resolver
+// config on the first successful reception. On subsequent reconnects it's
+// a no-op — see ensureRoutes for the rationale.
+func (c *Client) ensureDNS(a tunnel.AssignIP) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.resolvers != nil {
+		return nil
+	}
+	if len(a.DNS) == 0 {
+		return nil
+	}
+
+	mgr := dns.New(c.log, c.dev.Name())
+	if err := mgr.Apply(a.DNS); err != nil {
+		return err
+	}
+	c.resolvers = mgr
+	return nil
 }
 
 // ensureConfigured calls tun.Configure on the FIRST successful AssignIP.

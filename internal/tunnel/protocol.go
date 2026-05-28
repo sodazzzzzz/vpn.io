@@ -48,11 +48,18 @@ type ControlMessage struct {
 
 // AssignIP is sent server→client after the TLS+mTLS handshake to tell the
 // client which tunnel IP it owns and how to configure its TUN interface.
+//
+// Routes and DNS are optional pushes. Routes are CIDR prefixes the client
+// should install via the TUN device (e.g. "0.0.0.0/0" for a full-tunnel
+// setup). DNS holds resolver addresses to configure on the client. Both
+// are JSON-omitted when empty so older clients/servers stay wire-compatible.
 type AssignIP struct {
-	IP      string `json:"ip"`      // e.g. "10.8.0.2"
-	Gateway string `json:"gateway"` // e.g. "10.8.0.1"
-	Netmask string `json:"netmask"` // e.g. "255.255.255.0"
-	MTU     int    `json:"mtu"`     // e.g. 1380
+	IP      string   `json:"ip"`               // e.g. "10.8.0.2"
+	Gateway string   `json:"gateway"`          // e.g. "10.8.0.1"
+	Netmask string   `json:"netmask"`          // e.g. "255.255.255.0"
+	MTU     int      `json:"mtu"`              // e.g. 1380
+	Routes  []string `json:"routes,omitempty"` // CIDRs, e.g. ["0.0.0.0/0"]
+	DNS     []string `json:"dns,omitempty"`    // resolver IPs, e.g. ["1.1.1.1"]
 }
 
 // ErrorMsg is sent server→client (or vice versa) to report a fatal protocol

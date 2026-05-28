@@ -31,8 +31,9 @@ type harness struct {
 }
 
 // startServer brings up a Server bound to 127.0.0.1:0 with a fresh CA on
-// disk and a fake TUN. The caller cancels via h.shutdown().
-func startServer(t *testing.T, subnet, gateway, netmask string) *harness {
+// disk and a fake TUN. The caller cancels via h.shutdown(). Any opts mutate
+// the Config struct after defaults are filled in (e.g. to set PushRoutes).
+func startServer(t *testing.T, subnet, gateway, netmask string, opts ...func(*Config)) *harness {
 	t.Helper()
 
 	caDir := filepath.Join(t.TempDir(), "ca")
@@ -66,6 +67,9 @@ func startServer(t *testing.T, subnet, gateway, netmask string) *harness {
 		Gateway:    gateway,
 		Netmask:    netmask,
 		MTU:        1380,
+	}
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -138,6 +142,12 @@ func (h *harness) dial(clientCerts []tls.Certificate) (*tls.Conn, error) {
 // expectAssignIP reads the first frame from conn and asserts it is an
 // AssignIP control message; returns the assigned IP as a string.
 func (h *harness) expectAssignIP(conn *tls.Conn) string {
+	return h.expectAssign(conn).IP
+}
+
+// expectAssign reads the first frame from conn and returns the decoded
+// AssignIP — useful for assertions on Routes/DNS pushes too.
+func (h *harness) expectAssign(conn *tls.Conn) tunnel.AssignIP {
 	h.t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	defer conn.SetReadDeadline(time.Time{})
@@ -160,7 +170,7 @@ func (h *harness) expectAssignIP(conn *tls.Conn) string {
 	if err != nil {
 		h.t.Fatalf("ParseAssignIP: %v", err)
 	}
-	return a.IP
+	return a
 }
 
 // buildIPv4 constructs a minimal valid IPv4 packet with the requested src
@@ -446,4 +456,40 @@ func TestServer_PoolExhaustionReportsError(t *testing.T) {
 func TestServer_ShutsDownCleanlyIdle(t *testing.T) {
 	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0")
 	h.shutdown()
+}
+
+// Server with PushRoutes/PushDNS configured must forward both into the
+// AssignIP control message sent at handshake.
+func TestServer_PushesRoutesAndDNS(t *testing.T) {
+	routes := []string{"0.0.0.0/0", "192.168.42.0/24"}
+	dns := []string{"1.1.1.1", "9.9.9.9"}
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.PushRoutes = routes; c.PushDNS = dns },
+	)
+	defer h.shutdown()
+
+	cert := h.issueClient("alice")
+	conn, err := h.dial([]tls.Certificate{cert})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	a := h.expectAssign(conn)
+	if len(a.Routes) != len(routes) {
+		t.Fatalf("Routes len: got %d, want %d (%v)", len(a.Routes), len(routes), a.Routes)
+	}
+	for i, r := range routes {
+		if a.Routes[i] != r {
+			t.Fatalf("Routes[%d]: got %q, want %q", i, a.Routes[i], r)
+		}
+	}
+	if len(a.DNS) != len(dns) {
+		t.Fatalf("DNS len: got %d, want %d (%v)", len(a.DNS), len(dns), a.DNS)
+	}
+	for i, d := range dns {
+		if a.DNS[i] != d {
+			t.Fatalf("DNS[%d]: got %q, want %q", i, a.DNS[i], d)
+		}
+	}
 }

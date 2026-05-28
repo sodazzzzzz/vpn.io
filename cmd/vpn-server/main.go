@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,8 +26,8 @@ func main() {
 	var (
 		listen    = flag.String("listen", ":8443", "listen address")
 		caFile    = flag.String("ca", "ca-data/ca.crt", "CA certificate (clients must be signed by this)")
-		certFile  = flag.String("cert", "ca-data/server.crt", "server certificate")
-		keyFile   = flag.String("key", "ca-data/server.key", "server private key")
+		certFile  = flag.String("cert", "ca-data/server/server.crt", "server certificate")
+		keyFile   = flag.String("key", "ca-data/server/server.key", "server private key")
 		subnet    = flag.String("subnet", "10.8.0.0/24", "tunnel subnet")
 		gateway   = flag.String("gateway", "10.8.0.1", "server's tunnel IP (gateway for clients)")
 		netmask   = flag.String("netmask", "255.255.255.0", "tunnel netmask")
@@ -34,11 +35,15 @@ func main() {
 		tunName   = flag.String("tun-name", "", "TUN interface name (empty = driver picks)")
 		keepalive = flag.Duration("keepalive", 30*time.Second, "keepalive interval (0 = off)")
 		logLevel  = flag.String("log-level", "info", "debug|info|warn|error")
+		routesRaw = flag.String("push-routes", "", "comma-separated CIDRs to push to clients (e.g. 0.0.0.0/0 for full-tunnel)")
+		dnsRaw    = flag.String("push-dns", "", "comma-separated DNS resolver IPs to push to clients (e.g. 1.1.1.1,9.9.9.9)")
 	)
 	flag.Parse()
 
 	level := parseLevel(*logLevel)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	warnIfForwardingDisabled(log)
 
 	cfg := server.Config{
 		Listen:     *listen,
@@ -51,6 +56,8 @@ func main() {
 		MTU:        *mtu,
 		TUNName:    *tunName,
 		Keepalive:  *keepalive,
+		PushRoutes: splitCSV(*routesRaw),
+		PushDNS:    splitCSV(*dnsRaw),
 	}
 
 	dev, err := tun.Open(cfg.TUNName, cfg.MTU)
@@ -79,6 +86,26 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("vpn-server: exited cleanly")
+}
+
+// splitCSV trims and drops empties so `-push-routes ""` yields nil rather
+// than [""]. The empty slice is what the server treats as "no push".
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseLevel(s string) slog.Level {
