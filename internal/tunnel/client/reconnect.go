@@ -99,24 +99,14 @@ func isFatal(err error) bool {
 		errors.Is(err, context.DeadlineExceeded)
 }
 
-// classifyDialError maps a tls.Dialer.DialContext error into either a
-// fatal authentication wrapper (so the loop stops) or the original error
-// (so the loop retries). Non-cert dial failures — connection refused,
-// DNS, timeout — are retryable.
-func classifyDialError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if isCertError(err) {
-		return fmt.Errorf("%w: %v", ErrFatalAuth, err)
-	}
-	return err
-}
-
-// classifyReadError covers the first-frame Read that follows a
-// successful TLS dial. TLS 1.3 sometimes delays the "bad certificate"
-// alert until here; we want to surface it as fatal.
-func classifyReadError(err error) error {
+// classifyConnectError maps a connect-path error into either a fatal
+// authentication wrapper (so the reconnect loop stops) or the original
+// error (so the loop retries). It covers both the tls.Dialer.DialContext
+// failure and the first-frame Read that follows a successful dial — TLS
+// 1.3 sometimes delays the "bad certificate" alert from the handshake
+// until that first Read. Non-cert failures (connection refused, DNS,
+// timeout) are returned unchanged and stay retryable.
+func classifyConnectError(err error) error {
 	if err == nil {
 		return nil
 	}

@@ -1,0 +1,25 @@
+# golangci-lint v2 configuration for vpn.io.
+# Conservative, high-signal linter set — kept green as a CI gate (Stage 0).
+version: "2"
+
+linters:
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # go vet
+    - ineffassign   # ineffectual assignments
+    - staticcheck   # staticcheck suite (incl. gosimple/stylecheck in v2)
+    - unused        # unused code
+
+  exclusions:
+    generated: lax
+    rules:
+      # Disable errcheck entirely in tests: test helpers routinely ignore
+      # Close/Write returns and discard the error from setup calls (e.g.
+      # `ip, _ := pool.Allocate(...)`). Production code keeps full errcheck.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

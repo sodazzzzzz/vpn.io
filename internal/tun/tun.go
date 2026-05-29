@@ -39,15 +39,34 @@ func Open(name string, mtu int) (Device, error) {
 	return openDevice(name, mtu)
 }
 
+// SelfConfigurer is an optional interface a Device may implement to handle
+// its own IPv4 addressing instead of having this package shell out to OS
+// tools (ip/ifconfig/netsh).
+//
+// Devices returned by Open do NOT implement it — they go through the
+// platform configureDevice path. The seam exists so alternative Device
+// backends can supply their own configuration: in-memory fakes in tests
+// today, and (per the roadmap) a privileged-helper or mobile fd-based
+// device later, where "run ip addr add" is not how addressing happens.
+type SelfConfigurer interface {
+	ConfigureAddr(ip, netmask, gateway string) error
+}
+
 // Configure assigns an IPv4 address and netmask to dev and brings it up.
 //
 // gateway is the peer/remote address of the point-to-point link. It is
 // required on macOS (utun is strictly point-to-point) and ignored on
 // Linux and Windows.
 //
+// If dev implements [SelfConfigurer], that path is used; otherwise Configure
+// shells out to the platform's network tools.
+//
 // Configure does not install any routes — routing is the caller's
 // responsibility (see internal/tunnel for the server- and client-side
 // route setup).
 func Configure(dev Device, ip, netmask, gateway string) error {
+	if sc, ok := dev.(SelfConfigurer); ok {
+		return sc.ConfigureAddr(ip, netmask, gateway)
+	}
 	return configureDevice(dev.Name(), ip, netmask, gateway, dev.MTU())
 }

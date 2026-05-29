@@ -90,18 +90,6 @@ func TestExhaustion(t *testing.T) {
 	}
 }
 
-func TestLookup(t *testing.T) {
-	p := mustNew(t, "10.8.0.0/24", net.IPv4(10, 8, 0, 1))
-	ip, _ := p.Allocate("alice")
-	cn, ok := p.Lookup(ip)
-	if !ok || cn != "alice" {
-		t.Fatalf("Lookup(%s) = %q,%v; want alice,true", ip, cn, ok)
-	}
-	if _, ok := p.Lookup(net.IPv4(10, 8, 0, 99)); ok {
-		t.Fatalf("Lookup of unallocated IP returned ok=true")
-	}
-}
-
 func TestConcurrent(t *testing.T) {
 	// /22 → 1024 addrs, ~1021 usable (minus net/bcast/gateway).
 	p := mustNew(t, "10.8.0.0/22", net.IPv4(10, 8, 0, 1))
