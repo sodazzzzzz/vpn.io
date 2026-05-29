@@ -1,0 +1,45 @@
+name: Claude Auto Review
+
+# Automatic AI review on every pull request.
+# Requires: the "claude" GitHub App installed on the repo and a
+# CLAUDE_CODE_OAUTH_TOKEN secret. See .github/CLAUDE_REVIEW_SETUP.md.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read # let Claude read CI results on the PR
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Сделай ревью этого pull request как опытный Go-инженер.
+            Проект — кроссплатформенный VPN на Go (TUN, TLS/mTLS, свой wire-protocol).
+            Сфокусируйся на:
+              - корректность: гонки данных, дедлоки, утечки горутин/ресурсов,
+                ошибки обработки сетевых ошибок и graceful shutdown;
+              - безопасность: TLS/mTLS, валидация пакетов, anti-spoof/isolation,
+                обращение с приватными ключами и сертификатами;
+              - идиоматичность Go и согласованность со стилем окружающего кода;
+              - реальные баги важнее придирок — отмечай уверенные находки,
+                неуверенные помечай как таковые.
+            Оставляй конкретные inline-комментарии со ссылкой на файл и строку.
+            Пиши по-русски.
+          claude_args: "--max-turns 8"
