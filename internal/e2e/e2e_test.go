@@ -209,13 +209,14 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Run(srvCtx) }()
 	// Even on an early t.Fatal, tear the server down and wait for Run to
-	// return. cancel() closes the listener; srvTUN.Close() closes its inbox to
-	// unblock runTUNReader (which checks closeCh only between reads, not while
-	// parked in Read). Waiting on srvErr keeps the -race detector from
-	// attributing late goroutine access to srvTUN after the test "finished".
+	// return. The server OWNS srvTUN: srvCancel() makes Run call shutdown(),
+	// which closes the listener AND the TUN — that closes srvTUN.inbox and
+	// unblocks runTUNReader. We must NOT close srvTUN here too (that would be
+	// the double close server.New documents as unsafe). Waiting on srvErr
+	// keeps the -race detector from attributing late goroutine access to
+	// srvTUN after the test "finished".
 	t.Cleanup(func() {
 		srvCancel()
-		_ = srvTUN.Close()
 		select {
 		case <-srvErr:
 		case <-time.After(5 * time.Second):
