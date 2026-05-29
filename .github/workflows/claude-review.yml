@@ -29,21 +29,19 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           additional_permissions: |
             actions: read
+          # The official /code-review plugin handles inline-comment posting
+          # itself (tool permissions are declared by the plugin), so we drive
+          # it and just append our project-specific focus.
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
           prompt: |
-            Сделай ревью этого pull request как опытный Go-инженер.
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+
             Проект — кроссплатформенный VPN на Go (TUN, TLS/mTLS, свой wire-protocol).
-            Сфокусируйся на:
-              - корректность: гонки данных, дедлоки, утечки горутин/ресурсов,
-                ошибки обработки сетевых ошибок и graceful shutdown;
+            Особое внимание (отвечай по-русски):
+              - корректность конкурентности: гонки данных, дедлоки,
+                утечки горутин/ресурсов, обработка сетевых ошибок, graceful shutdown;
               - безопасность: TLS/mTLS, валидация пакетов, anti-spoof/isolation,
                 обращение с приватными ключами и сертификатами;
-              - идиоматичность Go и согласованность со стилем окружающего кода;
-              - реальные баги важнее придирок — отмечай уверенные находки,
-                неуверенные помечай как таковые.
-            Оставляй конкретные inline-комментарии со ссылкой на файл и строку
-            через инструмент mcp__github_inline_comment__create_inline_comment.
-            Если замечаний нет — напиши краткое резюме в общий комментарий.
-            Пиши по-русски.
-          claude_args: |
-            --max-turns 30
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*)"
+              - идиоматичность Go и согласованность со стилем окружающего кода.
+          claude_args: "--max-turns 30"
