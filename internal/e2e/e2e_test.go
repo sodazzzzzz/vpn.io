@@ -83,8 +83,14 @@ func (m *memTUN) Write(p []byte) (int, error) {
 	out := m.outbox
 	m.mu.Unlock()
 	// Non-blocking: if the test stopped draining outbox (e.g. it already
-	// failed a recvWithin), we must not park this goroutine forever. A full
-	// buffer means the test isn't reading, which is itself a test bug.
+	// failed a recvWithin), we must not park this goroutine forever.
+	//
+	// NOTE: a full buffer returns an error, which differs from a real
+	// wireguard/tun device (that blocks or silently drops, never errors). On
+	// the server path that error makes sessionReader tear the session down.
+	// That's intentional here: with buf=64 and the one-packet-at-a-time flow
+	// of this test, the buffer can only fill if the test itself stopped
+	// reading — i.e. a test bug we want surfaced, not a real-device condition.
 	select {
 	case out <- cp:
 		return len(p), nil
@@ -221,6 +227,11 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 		case <-srvErr:
 		case <-time.After(5 * time.Second):
 			t.Errorf("server goroutine did not exit within 5s after cancel")
+			// Run is wedged and never reached shutdown()/tun.Close(), so
+			// runTUNReader is still parked in <-inbox. Force-close srvTUN as a
+			// fallback to unblock it; memTUN.Close is idempotent, so racing
+			// with a late shutdown() is safe (unlike a real wireguard/tun).
+			_ = srvTUN.Close()
 		}
 	})
 	waitClosed(t, srv.Ready(), 2*time.Second, "server ready")

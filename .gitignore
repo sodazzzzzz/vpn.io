@@ -14,6 +14,10 @@
 # Local planning notes — not part of the published project
 /ROADMAP.md
 
+# Claude Code runtime/local files (lock files, per-user local settings)
+.claude/*.lock
+.claude/settings.local.json
+
 # IDE / editor
 .idea/
 

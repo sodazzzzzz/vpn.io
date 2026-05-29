@@ -13,7 +13,9 @@ linters:
   exclusions:
     generated: lax
     rules:
-      # Test files may ignore Close/Write errors freely.
+      # Disable errcheck entirely in tests: test helpers routinely ignore
+      # Close/Write returns and discard the error from setup calls (e.g.
+      # `ip, _ := pool.Allocate(...)`). Production code keeps full errcheck.
       - path: _test\.go
         linters:
           - errcheck
