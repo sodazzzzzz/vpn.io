@@ -188,6 +188,11 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 
 	// --- server -------------------------------------------------------------
 	srvTUN := newMemTUN("e2e-srv", 1380, 64)
+	// Closing the TUN closes its inbox, which unblocks any goroutine parked in
+	// Read (the client's devicePoller). cancel() alone can't do that — the
+	// poller only checks ctx between reads, not while blocked in one. Register
+	// this so an early t.Fatalf can't leak those goroutines. Close is idempotent.
+	t.Cleanup(func() { _ = srvTUN.Close() })
 	srv, err := server.New(server.Config{
 		Listen:     "127.0.0.1:0",
 		CACertFile: caCert,
@@ -213,6 +218,7 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 
 	// --- client -------------------------------------------------------------
 	cliTUN := newMemTUN("e2e-cli", 1380, 64)
+	t.Cleanup(func() { _ = cliTUN.Close() }) // unblock runDevicePoller on early exit
 	cli, err := client.New(client.Config{
 		Server:     srv.Addr().String(),
 		CACertFile: caCert,
