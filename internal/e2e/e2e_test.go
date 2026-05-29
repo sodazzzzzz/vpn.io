@@ -188,11 +188,6 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 
 	// --- server -------------------------------------------------------------
 	srvTUN := newMemTUN("e2e-srv", 1380, 64)
-	// Closing the TUN closes its inbox, which unblocks any goroutine parked in
-	// Read (the client's devicePoller). cancel() alone can't do that — the
-	// poller only checks ctx between reads, not while blocked in one. Register
-	// this so an early t.Fatalf can't leak those goroutines. Close is idempotent.
-	t.Cleanup(func() { _ = srvTUN.Close() })
 	srv, err := server.New(server.Config{
 		Listen:     "127.0.0.1:0",
 		CACertFile: caCert,
@@ -211,14 +206,26 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	}
 
 	srvCtx, srvCancel := context.WithCancel(context.Background())
-	t.Cleanup(srvCancel) // unblock the server even if the test fails early
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Run(srvCtx) }()
+	// Even on an early t.Fatal, tear the server down and wait for Run to
+	// return. cancel() closes the listener; srvTUN.Close() closes its inbox to
+	// unblock runTUNReader (which checks closeCh only between reads, not while
+	// parked in Read). Waiting on srvErr keeps the -race detector from
+	// attributing late goroutine access to srvTUN after the test "finished".
+	t.Cleanup(func() {
+		srvCancel()
+		_ = srvTUN.Close()
+		select {
+		case <-srvErr:
+		case <-time.After(5 * time.Second):
+			t.Errorf("server goroutine did not exit within 5s after cancel")
+		}
+	})
 	waitClosed(t, srv.Ready(), 2*time.Second, "server ready")
 
 	// --- client -------------------------------------------------------------
 	cliTUN := newMemTUN("e2e-cli", 1380, 64)
-	t.Cleanup(func() { _ = cliTUN.Close() }) // unblock runDevicePoller on early exit
 	cli, err := client.New(client.Config{
 		Server:     srv.Addr().String(),
 		CACertFile: caCert,
@@ -231,23 +238,38 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	}
 
 	cliCtx, cliCancel := context.WithCancel(context.Background())
-	t.Cleanup(cliCancel) // unblock the client even if the test fails early
 	cliErr := make(chan error, 1)
 	go func() { cliErr <- cli.Run(cliCtx) }()
+	// Same teardown contract as the server: cancel, close cliTUN (unblocks the
+	// devicePoller parked in Read), and wait for Run to return.
+	t.Cleanup(func() {
+		cliCancel()
+		_ = cliTUN.Close()
+		select {
+		case <-cliErr:
+		case <-time.After(5 * time.Second):
+			t.Errorf("client goroutine did not exit within 5s after cancel")
+		}
+	})
 
 	// Client configures its TUN right after AssignIP — our signal that the
 	// session is live and the devicePoller is draining cliTUN.
 	waitClosed(t, cliTUN.configured, 3*time.Second, "client TUN configured")
 
-	// Use the IP the server actually assigned (captured in ConfigureAddr)
-	// rather than hard-coding it — keeps the test correct if pool allocation
-	// order ever changes, and fails with a clear message if it's unexpected.
+	// Drive routing with the IP the server actually assigned (captured in
+	// ConfigureAddr), not a literal — so the packet assertions below can't
+	// silently misroute if allocation order ever changes.
 	assignedIP := net.ParseIP(cliTUN.configuredIP)
 	if assignedIP == nil {
 		t.Fatalf("client configured with unparseable IP %q", cliTUN.configuredIP)
 	}
-	if cliTUN.configuredIP != "10.8.0.2" {
-		t.Fatalf("assigned IP = %q, want 10.8.0.2 (lowest free in pool)", cliTUN.configuredIP)
+	// This test also intentionally pins the pool's deterministic allocation:
+	// the sole client must get the lowest free host in 10.8.0.0/24 after the
+	// gateway 10.8.0.1 is reserved. If ipalloc's order ever changes on
+	// purpose, update wantIP.
+	const wantIP = "10.8.0.2"
+	if cliTUN.configuredIP != wantIP {
+		t.Fatalf("assigned IP = %q, want %s", cliTUN.configuredIP, wantIP)
 	}
 	gateway := net.IPv4(10, 8, 0, 1)
 
@@ -267,19 +289,8 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 		t.Fatalf("client TUN payload = %q, want pong-down", got)
 	}
 
-	// --- clean shutdown -----------------------------------------------------
-	cliCancel()
-	select {
-	case <-cliErr:
-	case <-time.After(3 * time.Second):
-		t.Fatal("client did not exit within 3s")
-	}
-	_ = cliTUN.Close()
-
-	srvCancel()
-	select {
-	case <-srvErr:
-	case <-time.After(3 * time.Second):
-		t.Fatal("server did not shut down within 3s")
-	}
+	// Clean shutdown is asserted by the t.Cleanup teardown registered above:
+	// it cancels each side, closes its TUN, and fails the test if Run doesn't
+	// return within 5s. Cleanups run in LIFO order (client first, then server),
+	// which matches a normal disconnect sequence.
 }
