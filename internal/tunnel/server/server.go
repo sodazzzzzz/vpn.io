@@ -80,10 +80,11 @@ type Server struct {
 
 // New constructs a Server around an already-opened TUN device.
 //
-// Ownership of dev transfers to the Server: Run closes it on exit (via
-// shutdown) so the TUN-reader goroutine can unblock. Callers must NOT also
-// defer dev.Close() — a double close on a real wireguard/tun device is not
-// guaranteed safe. The seam still lets tests inject a fake in-memory TUN.
+// On success, ownership of dev transfers to the Server: Run closes it on exit
+// (via shutdown) so the TUN-reader goroutine can unblock, and callers must NOT
+// also defer dev.Close() — a double close on a real wireguard/tun device is
+// not guaranteed safe. On error, New takes no ownership: the caller still owns
+// dev and must close it. The seam still lets tests inject a fake in-memory TUN.
 func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
