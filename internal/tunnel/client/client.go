@@ -381,7 +381,7 @@ func (c *Client) ensureConfigured(a tunnel.AssignIP) error {
 func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan []byte) error {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	w := newConnWriter(conn)
 	errCh := make(chan error, 3) // bounded by # of goroutines below

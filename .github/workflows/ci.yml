@@ -46,6 +46,7 @@ jobs:
         target:
           - { goos: linux, goarch: amd64 }
           - { goos: windows, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 } # build-only: compiles the *_darwin.go files
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

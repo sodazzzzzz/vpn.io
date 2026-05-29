@@ -13,6 +13,7 @@ package e2e
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -40,8 +41,9 @@ type memTUN struct {
 	inbox  chan []byte
 	outbox chan []byte
 
-	configured chan struct{} // closed when ConfigureAddr is first called
-	configOnce sync.Once
+	configured   chan struct{} // closed when ConfigureAddr is first called
+	configOnce   sync.Once
+	configuredIP string // the IP passed to the first ConfigureAddr; read after <-configured
 
 	mu     sync.Mutex
 	closed bool
@@ -80,8 +82,15 @@ func (m *memTUN) Write(p []byte) (int, error) {
 	}
 	out := m.outbox
 	m.mu.Unlock()
-	out <- cp
-	return len(p), nil
+	// Non-blocking: if the test stopped draining outbox (e.g. it already
+	// failed a recvWithin), we must not park this goroutine forever. A full
+	// buffer means the test isn't reading, which is itself a test bug.
+	select {
+	case out <- cp:
+		return len(p), nil
+	default:
+		return 0, fmt.Errorf("memTUN %s: outbox full (reader not consuming)", m.name)
+	}
 }
 
 func (m *memTUN) Name() string { return m.name }
@@ -99,17 +108,29 @@ func (m *memTUN) Close() error {
 	return nil
 }
 
-// ConfigureAddr satisfies tun.SelfConfigurer: record readiness, no OS calls.
+// ConfigureAddr satisfies tun.SelfConfigurer: record the assigned IP and
+// signal readiness, no OS calls. configuredIP is written exactly once before
+// the channel closes, so a reader that waits on <-configured sees it safely.
 func (m *memTUN) ConfigureAddr(ip, netmask, gateway string) error {
-	m.configOnce.Do(func() { close(m.configured) })
+	m.configOnce.Do(func() {
+		m.configuredIP = ip
+		close(m.configured)
+	})
 	return nil
 }
 
-// inject stages a packet for the owner to Read.
-func (m *memTUN) inject(pkt []byte) {
+// inject stages a packet for the owner to Read. It is non-blocking: a full
+// inbox means the owner isn't reading, so we surface that instead of parking
+// the test goroutine forever.
+func (m *memTUN) inject(t *testing.T, pkt []byte) {
+	t.Helper()
 	cp := make([]byte, len(pkt))
 	copy(cp, pkt)
-	m.inbox <- cp
+	select {
+	case m.inbox <- cp:
+	default:
+		t.Fatalf("memTUN %s: inbox full — reader not consuming packets?", m.name)
+	}
 }
 
 // buildIPv4 constructs a minimal valid IPv4 packet (checksum left zero —
@@ -185,6 +206,7 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	}
 
 	srvCtx, srvCancel := context.WithCancel(context.Background())
+	t.Cleanup(srvCancel) // unblock the server even if the test fails early
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Run(srvCtx) }()
 	waitClosed(t, srv.Ready(), 2*time.Second, "server ready")
@@ -203,6 +225,7 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	}
 
 	cliCtx, cliCancel := context.WithCancel(context.Background())
+	t.Cleanup(cliCancel) // unblock the client even if the test fails early
 	cliErr := make(chan error, 1)
 	go func() { cliErr <- cli.Run(cliCtx) }()
 
@@ -210,12 +233,20 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	// session is live and the devicePoller is draining cliTUN.
 	waitClosed(t, cliTUN.configured, 3*time.Second, "client TUN configured")
 
-	// The pool is deterministic; the sole client gets the lowest free addr.
-	assignedIP := net.IPv4(10, 8, 0, 2)
+	// Use the IP the server actually assigned (captured in ConfigureAddr)
+	// rather than hard-coding it — keeps the test correct if pool allocation
+	// order ever changes, and fails with a clear message if it's unexpected.
+	assignedIP := net.ParseIP(cliTUN.configuredIP)
+	if assignedIP == nil {
+		t.Fatalf("client configured with unparseable IP %q", cliTUN.configuredIP)
+	}
+	if cliTUN.configuredIP != "10.8.0.2" {
+		t.Fatalf("assigned IP = %q, want 10.8.0.2 (lowest free in pool)", cliTUN.configuredIP)
+	}
 	gateway := net.IPv4(10, 8, 0, 1)
 
 	// --- client → server-TUN ------------------------------------------------
-	cliTUN.inject(buildIPv4(assignedIP, gateway, []byte("ping-up")))
+	cliTUN.inject(t, buildIPv4(assignedIP, gateway, []byte("ping-up")))
 	up := recvWithin(t, srvTUN.outbox, 2*time.Second, "packet on server TUN")
 	if got := string(up[20:]); got != "ping-up" {
 		t.Fatalf("server TUN payload = %q, want ping-up", got)
@@ -224,7 +255,7 @@ func TestEndToEnd_RoundTrip(t *testing.T) {
 	// --- server-TUN → client ------------------------------------------------
 	// A packet arriving on the server's TUN destined for the client's IP must
 	// be routed down the tunnel and written to the client's TUN.
-	srvTUN.inject(buildIPv4(net.IPv4(8, 8, 8, 8), assignedIP, []byte("pong-down")))
+	srvTUN.inject(t, buildIPv4(net.IPv4(8, 8, 8, 8), assignedIP, []byte("pong-down")))
 	down := recvWithin(t, cliTUN.outbox, 2*time.Second, "packet on client TUN")
 	if got := string(down[20:]); got != "pong-down" {
 		t.Fatalf("client TUN payload = %q, want pong-down", got)
