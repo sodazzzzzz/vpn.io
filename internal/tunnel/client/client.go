@@ -211,7 +211,7 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 	dialer := &tls.Dialer{Config: c.tlsConfig}
 	conn, err := dialer.DialContext(ctx, "tcp", c.cfg.Server)
 	if err != nil {
-		return classifyDialError(err)
+		return classifyConnectError(err)
 	}
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
@@ -232,7 +232,7 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 	typ, body, err := tunnel.ReadPacket(tlsConn)
 	_ = tlsConn.SetReadDeadline(time.Time{})
 	if err != nil {
-		return classifyReadError(err)
+		return classifyConnectError(err)
 	}
 	if typ != tunnel.FrameControl {
 		return fmt.Errorf("client: expected control frame, got type 0x%02x", typ)

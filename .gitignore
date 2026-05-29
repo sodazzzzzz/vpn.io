@@ -11,6 +11,9 @@
 *.key
 *.pem
 
+# Local planning notes — not part of the published project
+/ROADMAP.md
+
 # IDE / editor
 .idea/
 
