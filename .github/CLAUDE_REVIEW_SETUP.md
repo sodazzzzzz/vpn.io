@@ -12,7 +12,7 @@
 Workflow не заработают, пока не выполнены два шага — у них нужны права
 и секрет, которые нельзя закоммитить в репозиторий.
 
-### 1. Установить GitHub App «claude»
+### 1. Установить GitHub App «claude» + завести токен
 
 Проще всего из Claude Code CLI:
 
@@ -20,26 +20,32 @@ Workflow не заработают, пока не выполнены два ша
 /install-github-app
 ```
 
-…и пройти мастер. Либо вручную установить приложение на этот репозиторий:
-<https://github.com/apps/claude>.
+Мастер установит приложение на репозиторий и заведёт секрет
+`CLAUDE_CODE_OAUTH_TOKEN` (токен от твоей подписки Claude — отдельный
+API-биллинг не нужен). Альтернатива: установить приложение вручную с
+<https://github.com/apps/claude> и сгенерировать токен через
+`claude setup-token`.
 
-### 2. Добавить секрет `ANTHROPIC_API_KEY`
-
-API-ключ берётся из Anthropic Console (<https://console.anthropic.com/>).
-Затем:
+### 2. Проверить, что секрет на месте
 
 ```bash
-gh secret set ANTHROPIC_API_KEY --repo sodazzzzzz/vpn.io
-# вставить ключ по запросу (он не печатается на экран)
+gh secret list --repo sodazzzzzz/vpn.io
+# должен быть CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-или через UI: **Settings → Secrets and variables → Actions → New repository secret**.
+Если токена нет — повтори `/install-github-app` или добавь вручную:
 
-> Подписочный OAuth-токен Claude **не** подходит — нужен именно
-> `ANTHROPIC_API_KEY`. Учти, что ревью расходует API-токены (биллинг Anthropic).
+```bash
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo sodazzzzzz/vpn.io
+```
+
+> Workflow аутентифицируются параметром `claude_code_oauth_token`. Если
+> предпочитаешь оплату по API-токенам Anthropic — можно заменить его на
+> `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` в обоих файлах и
+> завести секрет `ANTHROPIC_API_KEY` вместо OAuth-токена.
 
 ## Проверка
 
-После обоих шагов открой тестовый PR — workflow «Claude Auto Review» должен
+После настройки открой тестовый PR — workflow «Claude Auto Review» должен
 запуститься и оставить комментарии. В любом комментарии можно написать
 `@claude ...` — ответит workflow «Claude Mention Handler».
