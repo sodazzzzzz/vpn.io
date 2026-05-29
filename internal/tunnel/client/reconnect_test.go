@@ -97,16 +97,16 @@ func TestIsCertError_DetectsTypedAndStringForms(t *testing.T) {
 	}
 }
 
-func TestClassifyDialError_FatalForCerts_RetryableForRest(t *testing.T) {
-	auth := classifyDialError(x509.UnknownAuthorityError{})
+func TestClassifyConnectError_FatalForCerts_RetryableForRest(t *testing.T) {
+	auth := classifyConnectError(x509.UnknownAuthorityError{})
 	if !errors.Is(auth, ErrFatalAuth) {
 		t.Errorf("unknown CA: got %v, want wrapping ErrFatalAuth", auth)
 	}
-	net := classifyDialError(errors.New("connection refused"))
+	net := classifyConnectError(errors.New("connection refused"))
 	if errors.Is(net, ErrFatalAuth) {
 		t.Errorf("connection refused: got %v, should NOT wrap ErrFatalAuth", net)
 	}
-	if classifyDialError(nil) != nil {
+	if classifyConnectError(nil) != nil {
 		t.Errorf("nil err: want nil")
 	}
 }

@@ -13,7 +13,7 @@ CA_HOSTS    ?= localhost,127.0.0.1
 BIN := bin
 GO  := go
 
-.PHONY: help build test vet fmt clean \
+.PHONY: help build test vet fmt lint clean \
         ca-init ca-server ca-client \
         run-server run-client \
         cross
@@ -21,8 +21,9 @@ GO  := go
 help:
 	@echo "Targets:"
 	@echo "  build           — build vpn-ca / vpn-server / vpn-client into ./$(BIN)/"
-	@echo "  test            — go test ./..."
+	@echo "  test            — go test -race ./..."
 	@echo "  vet             — go vet ./..."
+	@echo "  lint            — golangci-lint run ./... (needs golangci-lint v2)"
 	@echo "  fmt             — gofmt -w ."
 	@echo "  clean           — remove ./$(BIN)/ and CA material"
 	@echo "  cross           — cross-compile for linux/amd64 and windows/amd64"
@@ -50,10 +51,13 @@ $(BIN)/vpn-client: $(shell find cmd/vpn-client internal -name '*.go' 2>/dev/null
 	$(GO) build -o $@ ./cmd/vpn-client
 
 test:
-	$(GO) test ./...
+	$(GO) test -race ./...
 
 vet:
 	$(GO) vet ./...
+
+lint:
+	golangci-lint run ./...
 
 fmt:
 	gofmt -w .

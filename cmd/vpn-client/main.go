@@ -50,7 +50,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "vpn-client: open tun:", err)
 		os.Exit(1)
 	}
-	defer dev.Close()
+	defer func() { _ = dev.Close() }()
 
 	cfg := client.Config{
 		Server:       *server,

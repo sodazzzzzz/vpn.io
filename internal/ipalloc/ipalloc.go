@@ -30,7 +30,6 @@ type Pool struct {
 	addrs    []uint32 // candidate addresses in stable iteration order
 	free     map[uint32]struct{}
 	byClient map[string]uint32
-	ipToCN   map[uint32]string
 }
 
 // New builds a Pool that allocates from the given IPv4 CIDR (e.g.
@@ -78,7 +77,6 @@ func New(cidr string, reserve ...net.IP) (*Pool, error) {
 		addrs:    make([]uint32, 0, size-2),
 		free:     make(map[uint32]struct{}, size-2),
 		byClient: make(map[string]uint32),
-		ipToCN:   make(map[uint32]string),
 	}
 	for u := base + 1; u < broadcast; u++ {
 		if _, skip := reserved[u]; skip {
@@ -112,7 +110,6 @@ func (p *Pool) Allocate(clientID string) (net.IP, error) {
 		}
 		delete(p.free, candidate)
 		p.byClient[clientID] = candidate
-		p.ipToCN[candidate] = clientID
 		return uint32ToIP(candidate), nil
 	}
 	return nil, ErrPoolExhausted
@@ -130,7 +127,6 @@ func (p *Pool) Release(clientID string) {
 		return
 	}
 	delete(p.byClient, clientID)
-	delete(p.ipToCN, addr)
 	p.free[addr] = struct{}{}
 }
 
@@ -139,21 +135,6 @@ func (p *Pool) InUse() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.byClient)
-}
-
-// Lookup returns the clientID currently holding ip, or ("", false) if ip
-// is not allocated. Useful for reverse lookups when an IP packet arrives
-// from the TUN interface and the server needs to find the destination
-// client's connection.
-func (p *Pool) Lookup(ip net.IP) (string, bool) {
-	v4 := ip.To4()
-	if v4 == nil {
-		return "", false
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	cn, ok := p.ipToCN[ipToUint32(v4)]
-	return cn, ok
 }
 
 func ipToUint32(ip net.IP) uint32 {
