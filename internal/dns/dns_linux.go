@@ -3,15 +3,22 @@
 package dns
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // resolvConfPath is the file rewritten on systems without systemd-resolved.
 // It's a var so tests can point it at a temp file.
 var resolvConfPath = "/etc/resolv.conf"
+
+// commandTimeout bounds each external call (resolvectl talks to
+// systemd-resolved over D-Bus, which can hang after suspend/resume).
+const commandTimeout = 5 * time.Second
 
 // newRunner returns the Linux Runner. It picks a mechanism at Apply time:
 // systemd-resolved (resolvectl) when that's the active resolver, otherwise
@@ -30,6 +37,13 @@ type linuxRunner struct {
 }
 
 func (r *linuxRunner) Apply(servers []string, iface string) error {
+	// DNS servers come from the (semi-trusted) VPN server; keep only bare
+	// IPs so a malicious push can't inject extra resolv.conf directives via
+	// embedded newlines or arbitrary text.
+	servers = validIPs(servers)
+	if len(servers) == 0 {
+		return fmt.Errorf("dns: no valid resolver addresses in push")
+	}
 	if useResolvectl() {
 		return r.applyResolvectl(servers, iface)
 	}
@@ -45,6 +59,18 @@ func (r *linuxRunner) Restore() error {
 	default:
 		return nil
 	}
+}
+
+// validIPs returns only the entries that parse as a bare IP address.
+func validIPs(servers []string) []string {
+	var out []string
+	for _, s := range servers {
+		s = strings.TrimSpace(s)
+		if net.ParseIP(s) != nil {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // useResolvectl reports whether systemd-resolved is the active resolver:
@@ -68,8 +94,11 @@ func (r *linuxRunner) applyResolvectl(servers []string, iface string) error {
 		return err
 	}
 	// "~." makes this link the default route for every DNS query, so the
-	// tunnel resolver wins over the host's existing ones.
+	// tunnel resolver wins over the host's existing ones. If this second
+	// step fails the link already has our servers set, and the Manager
+	// won't call Restore after a failed Apply — so revert here ourselves.
 	if err := run("resolvectl", "domain", iface, "~."); err != nil {
+		_ = run("resolvectl", "revert", iface)
 		return err
 	}
 	r.mode = "resolvectl"
@@ -120,8 +149,8 @@ func (r *linuxRunner) restoreResolvConf() error {
 	return writeFileAtomic(resolvConfPath, r.savedData)
 }
 
-// buildResolvConf renders the resolv.conf body for servers. Pure, so it's
-// unit-testable.
+// buildResolvConf renders the resolv.conf body for servers. Callers pass
+// pre-validated IPs (Apply runs validIPs first). Pure, so it's unit-testable.
 func buildResolvConf(servers []string) []byte {
 	var b strings.Builder
 	b.WriteString("# Managed by vpn.io while the tunnel is up\n")
@@ -147,7 +176,9 @@ func writeFileAtomic(path string, content []byte) error {
 }
 
 func run(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s %s: %w (%s)", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

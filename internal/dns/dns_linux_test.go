@@ -5,6 +5,7 @@ package dns
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,20 @@ func TestBuildResolvConf(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("resolv.conf missing %q\n---\n%s", want, got)
 		}
+	}
+}
+
+func TestValidIPs_FiltersInjectionAndJunk(t *testing.T) {
+	got := validIPs([]string{
+		"1.1.1.1",
+		"1.1.1.1\nsearch attacker.com", // newline injection → dropped
+		"not-an-ip",                    // junk → dropped
+		"  9.9.9.9  ",                  // trimmed → kept
+		"2001:db8::1",                  // IPv6 → kept
+	})
+	want := []string{"1.1.1.1", "9.9.9.9", "2001:db8::1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("validIPs = %v, want %v", got, want)
 	}
 }
 
