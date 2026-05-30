@@ -20,8 +20,8 @@ import (
 // the egress services, dual-stack apps fall back to IPv4 (which the tunnel
 // carries) and nothing internet-bound leaks over v6.
 //
-// The future kill-switch will need stateful IPv4 filtering and will bring
-// in pf at that point; this v6-only block is intentionally lighter.
+// The macOS kill-switch (stateful IPv4 filtering via pf) is a follow-up; for
+// now Enable ignores the kill-switch fields of cfg and does the v6-only block.
 func newRunner(log *slog.Logger) Runner { return &darwinRunner{log: log} }
 
 type darwinRunner struct {
@@ -31,7 +31,7 @@ type darwinRunner struct {
 	saved map[string]string
 }
 
-func (d *darwinRunner) BlockIPv6() error {
+func (d *darwinRunner) Enable(_ Config) error {
 	svcs, err := d.listEnabledServices()
 	if err != nil {
 		return err
@@ -67,7 +67,7 @@ func (d *darwinRunner) BlockIPv6() error {
 	return nil
 }
 
-// restoreOnError rolls back on a BlockIPv6 failure path and folds any
+// restoreOnError rolls back on an Enable failure path and folds any
 // restore failure into the returned error, so a partial rollback that
 // leaves IPv6 off on some services isn't silently lost.
 func (d *darwinRunner) restoreOnError(err error) error {
@@ -102,6 +102,23 @@ func (d *darwinRunner) Restore() error {
 		d.saved = nil
 	} else {
 		d.saved = failed
+	}
+	return firstErr
+}
+
+// Clear is the stateless escape hatch: with no saved snapshot to restore
+// (e.g. recovering after a crash) the best we can do is put IPv6 back to
+// Automatic on every active service — the near-universal client default.
+func (d *darwinRunner) Clear() error {
+	svcs, err := d.listEnabledServices()
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, svc := range svcs {
+		if err := d.setV6(svc, "-setv6automatic"); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("reset IPv6 for %q: %w", svc, err)
+		}
 	}
 	return firstErr
 }

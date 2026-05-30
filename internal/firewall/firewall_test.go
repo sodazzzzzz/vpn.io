@@ -8,15 +8,18 @@ import (
 )
 
 type mockRunner struct {
-	blockCalls   int
+	enableCalls  int
 	restoreCalls int
-	blockErr     error
+	clearCalls   int
+	lastCfg      Config
+	enableErr    error
 	restoreErr   error
 }
 
-func (m *mockRunner) BlockIPv6() error {
-	m.blockCalls++
-	return m.blockErr
+func (m *mockRunner) Enable(cfg Config) error {
+	m.enableCalls++
+	m.lastCfg = cfg
+	return m.enableErr
 }
 
 func (m *mockRunner) Restore() error {
@@ -24,44 +27,52 @@ func (m *mockRunner) Restore() error {
 	return m.restoreErr
 }
 
+func (m *mockRunner) Clear() error {
+	m.clearCalls++
+	return nil
+}
+
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestBlockIPv6_HappyPath(t *testing.T) {
+func TestEnable_HappyPath(t *testing.T) {
 	r := &mockRunner{}
 	m := newWithRunner(discard(), r)
-	if err := m.BlockIPv6(); err != nil {
-		t.Fatalf("BlockIPv6: %v", err)
+	if err := m.Enable(Config{TunIface: "tun0"}); err != nil {
+		t.Fatalf("Enable: %v", err)
 	}
-	if r.blockCalls != 1 {
-		t.Fatalf("BlockIPv6 calls = %d, want 1", r.blockCalls)
+	if r.enableCalls != 1 {
+		t.Fatalf("Enable calls = %d, want 1", r.enableCalls)
+	}
+	if r.lastCfg.TunIface != "tun0" {
+		t.Fatalf("runner got cfg %+v, want TunIface tun0", r.lastCfg)
 	}
 	if !m.applied {
 		t.Fatal("Manager not marked applied after success")
 	}
 }
 
-func TestBlockIPv6_DoubleCallFails(t *testing.T) {
+func TestEnable_DoubleCallFails(t *testing.T) {
 	r := &mockRunner{}
 	m := newWithRunner(discard(), r)
-	if err := m.BlockIPv6(); err != nil {
-		t.Fatalf("BlockIPv6: %v", err)
+	if err := m.Enable(Config{}); err != nil {
+		t.Fatalf("Enable: %v", err)
 	}
-	if err := m.BlockIPv6(); err == nil {
-		t.Fatal("expected second BlockIPv6 to fail")
+	if err := m.Enable(Config{}); err == nil {
+		t.Fatal("expected second Enable to fail")
 	}
-	if r.blockCalls != 1 {
-		t.Fatalf("runner BlockIPv6 calls = %d, want 1 (second must be rejected before the runner)", r.blockCalls)
+	if r.enableCalls != 1 {
+		t.Fatalf("runner Enable calls = %d, want 1 (second must be rejected before the runner)", r.enableCalls)
 	}
 }
 
-func TestBlockIPv6_PropagatesRunnerError(t *testing.T) {
-	r := &mockRunner{blockErr: errors.New("boom")}
+func TestEnable_PropagatesRunnerError(t *testing.T) {
+	r := &mockRunner{enableErr: errors.New("boom")}
 	m := newWithRunner(discard(), r)
-	if err := m.BlockIPv6(); err == nil {
+	if err := m.Enable(Config{}); err == nil {
 		t.Fatal("expected error")
 	}
-	// A failed BlockIPv6 must NOT mark the Manager applied — otherwise
-	// Remove would call Restore on a block that was never installed.
+	// A failed Enable must NOT mark the Manager applied — otherwise Remove
+	// would call Restore on protection that was never installed.
 	if m.applied {
 		t.Fatal("Manager marked applied despite runner error")
 	}
@@ -70,8 +81,8 @@ func TestBlockIPv6_PropagatesRunnerError(t *testing.T) {
 func TestRemove_CallsRestoreOnce(t *testing.T) {
 	r := &mockRunner{}
 	m := newWithRunner(discard(), r)
-	if err := m.BlockIPv6(); err != nil {
-		t.Fatalf("BlockIPv6: %v", err)
+	if err := m.Enable(Config{}); err != nil {
+		t.Fatalf("Enable: %v", err)
 	}
 	m.Remove()
 	if r.restoreCalls != 1 {
@@ -84,7 +95,7 @@ func TestRemove_CallsRestoreOnce(t *testing.T) {
 	}
 }
 
-func TestRemove_BeforeBlockIsNoOp(t *testing.T) {
+func TestRemove_BeforeEnableIsNoOp(t *testing.T) {
 	r := &mockRunner{}
 	m := newWithRunner(discard(), r)
 	m.Remove()
@@ -100,8 +111,8 @@ func TestRemove_FailedRestoreKeepsApplied(t *testing.T) {
 	// again instead of treating a failed restore as done.
 	r := &mockRunner{restoreErr: errors.New("nope")}
 	m := newWithRunner(discard(), r)
-	if err := m.BlockIPv6(); err != nil {
-		t.Fatalf("BlockIPv6: %v", err)
+	if err := m.Enable(Config{}); err != nil {
+		t.Fatalf("Enable: %v", err)
 	}
 	m.Remove()
 	if !m.applied {
