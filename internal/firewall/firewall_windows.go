@@ -4,6 +4,7 @@ package firewall
 
 import (
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -17,8 +18,10 @@ const ruleName = "vpnio-leakguard-ipv6"
 // universally parsed by older builds.
 const globalUnicastV6Range = "2000::-3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
 
-// newRunner returns the Windows Runner, backed by `netsh advfirewall`.
-func newRunner() Runner { return netshRunner{} }
+// newRunner returns the Windows Runner, backed by `netsh advfirewall`. The
+// logger is unused here — netsh failures are returned to the Manager, which
+// logs them.
+func newRunner(*slog.Logger) Runner { return netshRunner{} }
 
 type netshRunner struct{}
 

@@ -54,7 +54,7 @@ func New(log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{log: log, runner: newRunner()}
+	return &Manager{log: log, runner: newRunner(log)}
 }
 
 // newWithRunner is for tests.

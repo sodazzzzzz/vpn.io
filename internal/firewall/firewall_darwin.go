@@ -22,9 +22,10 @@ import (
 //
 // The future kill-switch will need stateful IPv4 filtering and will bring
 // in pf at that point; this v6-only block is intentionally lighter.
-func newRunner() Runner { return &darwinRunner{} }
+func newRunner(log *slog.Logger) Runner { return &darwinRunner{log: log} }
 
 type darwinRunner struct {
+	log *slog.Logger
 	// saved[serviceName] = original IPv6 mode ("Automatic", "Off",
 	// "Link-local", "Manual") captured before we set it off.
 	saved map[string]string
@@ -50,7 +51,7 @@ func (d *darwinRunner) BlockIPv6() error {
 		if mode == "Manual" {
 			// We don't capture the static address/prefix/router, so Restore
 			// can only return the service to Automatic — surface the loss.
-			slog.Default().Warn("service has a static IPv6 config; leak protection will restore it as Automatic, dropping the manual address", "service", svc)
+			d.log.Warn("service has a static IPv6 config; leak protection will restore it as Automatic, dropping the manual address", "service", svc)
 		}
 		if err := d.setV6(svc, "-setv6off"); err != nil {
 			return d.restoreOnError(fmt.Errorf("disable IPv6 for %q: %w", svc, err))
@@ -79,8 +80,13 @@ func (d *darwinRunner) Restore() error {
 	}
 	var firstErr error
 	for svc, mode := range d.saved {
-		if err := d.setV6(svc, v6RestoreFlag(mode)); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("restore IPv6 for %q: %w", svc, err)
+		if err := d.setV6(svc, v6RestoreFlag(mode)); err != nil {
+			// Keep going so the remaining services are restored, but log
+			// every failure — only the first is folded into the return.
+			d.log.Warn("failed to restore IPv6 for service", "service", svc, "err", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("restore IPv6 for %q: %w", svc, err)
+			}
 		}
 	}
 	d.saved = nil

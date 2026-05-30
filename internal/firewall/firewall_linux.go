@@ -4,6 +4,7 @@ package firewall
 
 import (
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -13,8 +14,10 @@ import (
 // Restore can drop the whole thing without parsing anything back out.
 const tableName = "vpnio_leakguard"
 
-// newRunner returns the Linux Runner, backed by nftables (`nft`).
-func newRunner() Runner { return nftRunner{} }
+// newRunner returns the Linux Runner, backed by nftables (`nft`). The
+// logger is unused here — nft failures are returned to the Manager, which
+// logs them.
+func newRunner(*slog.Logger) Runner { return nftRunner{} }
 
 type nftRunner struct{}
 
@@ -29,7 +32,7 @@ add table inet %[1]s
 add chain inet %[1]s output { type filter hook output priority 0 ; policy accept ; }
 add rule inet %[1]s output ip6 daddr %[2]s drop
 `, tableName, GlobalUnicastV6)
-	return runNft(ruleset, "add", "table", "inet", tableName)
+	return runNft(ruleset, "load leakguard ruleset")
 }
 
 // Restore drops the whole table. It's a no-op-safe delete: Remove only
@@ -38,23 +41,23 @@ func (nftRunner) Restore() error {
 	return runNft("", "delete", "table", "inet", tableName)
 }
 
-// runNft runs `nft <args...>`. When stdin is non-empty it's fed to nft and
-// the args are used purely for error messages (nft reads the ruleset from
-// `-f -`).
-func runNft(stdin string, args ...string) error {
+// runNft runs nft. When ruleset is non-empty it's loaded atomically via
+// `nft -f -` and label is used only as error context (a human description
+// of the whole ruleset, since no single argv represents it). Otherwise
+// label is the literal `nft` argument vector.
+func runNft(ruleset string, label ...string) error {
 	var cmd *exec.Cmd
-	if stdin != "" {
+	if ruleset != "" {
 		cmd = exec.Command("nft", "-f", "-")
-		cmd.Stdin = strings.NewReader(stdin)
+		cmd.Stdin = strings.NewReader(ruleset)
 	} else {
-		cmd = exec.Command("nft", args...)
+		cmd = exec.Command("nft", label...)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		desc := "nft " + strings.Join(args, " ")
-		if stdin != "" {
-			// The real command was `nft -f -`; args are only a label.
-			desc = "nft -f - (" + strings.Join(args, " ") + ")"
+		desc := "nft " + strings.Join(label, " ")
+		if ruleset != "" {
+			desc = "nft -f - (" + strings.Join(label, " ") + ")"
 		}
 		return fmt.Errorf("%s: %w (%s)", desc, err, strings.TrimSpace(string(out)))
 	}

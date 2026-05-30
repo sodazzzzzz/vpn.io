@@ -88,6 +88,7 @@ type Client struct {
 	routes       *route.Manager    // non-nil after first successful Install
 	resolvers    *dns.Manager      // non-nil after first successful Apply
 	leakguard    *firewall.Manager // non-nil after IPv6 leak protection is enabled
+	leakguardOff bool              // a block attempt failed; don't retry/re-warn each reconnect
 }
 
 // New constructs a Client. dev must already be Open()ed; ownership stays
@@ -351,14 +352,16 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 // which the tunnel carries. On reconnects (or split-tunnel) it's a no-op.
 //
 // Failure is deliberately NON-fatal: a host without nft / an OS firewall
-// shouldn't be unable to connect at all. We log loudly and carry on — no
-// worse than the prior behaviour, which never blocked IPv6. Hardening to
-// fail-closed is tracked as follow-up.
+// shouldn't be unable to connect at all. We log loudly once and carry on —
+// no worse than the prior behaviour, which never blocked IPv6. The failure
+// causes (tool missing, no privileges) are static for the process, so we
+// don't retry or re-warn on every reconnect. Hardening to fail-closed is
+// tracked as follow-up.
 func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.leakguard != nil {
+	if c.leakguard != nil || c.leakguardOff {
 		return
 	}
 	if !isFullTunnel(a.Routes) {
@@ -368,6 +371,7 @@ func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
 	mgr := firewall.New(c.log)
 	if err := mgr.BlockIPv6(); err != nil {
 		c.log.Warn("IPv6 leak protection failed; IPv6 traffic may bypass the tunnel — block it manually or run with privileges", "err", err)
+		c.leakguardOff = true
 		return
 	}
 	c.leakguard = mgr
