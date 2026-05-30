@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/govpn/internal/dns"
+	"github.com/govpn/internal/firewall"
 	"github.com/govpn/internal/route"
 	"github.com/govpn/internal/tun"
 	"github.com/govpn/internal/tunnel"
@@ -83,9 +84,10 @@ type Client struct {
 	tlsConfig *tls.Config
 
 	mu           sync.Mutex
-	configuredIP string         // empty until first AssignIP triggers tun.Configure
-	routes       *route.Manager // non-nil after first successful Install
-	resolvers    *dns.Manager   // non-nil after first successful Apply
+	configuredIP string            // empty until first AssignIP triggers tun.Configure
+	routes       *route.Manager    // non-nil after first successful Install
+	resolvers    *dns.Manager      // non-nil after first successful Apply
+	leakguard    *firewall.Manager // non-nil after IPv6 leak protection is enabled
 }
 
 // New constructs a Client. dev must already be Open()ed; ownership stays
@@ -151,11 +153,16 @@ func (c *Client) Run(ctx context.Context) error {
 	c.mu.Lock()
 	rm := c.routes
 	dm := c.resolvers
+	fm := c.leakguard
 	c.routes = nil
 	c.resolvers = nil
+	c.leakguard = nil
 	c.mu.Unlock()
 	if dm != nil {
 		dm.Remove()
+	}
+	if fm != nil {
+		fm.Remove()
 	}
 	if rm != nil {
 		rm.Remove()
@@ -274,6 +281,8 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
 
+	c.ensureLeakProtection(assign)
+
 	if err := c.ensureDNS(assign); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
@@ -325,6 +334,49 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 	c.routes = mgr
 	c.log.Info("system routes installed", "count", len(a.Routes), "via", tunGW, "server-pinhole", serverIP)
 	return nil
+}
+
+// ensureLeakProtection blocks routable IPv6 egress on the first AssignIP
+// that makes this a full-tunnel client. The data plane is IPv4-only, so a
+// redirected IPv4 default leaves the host's untouched IPv6 default free to
+// carry traffic straight out the open network — a real address leak.
+// Blocking global-unicast IPv6 makes dual-stack apps fall back to IPv4,
+// which the tunnel carries. On reconnects (or split-tunnel) it's a no-op.
+//
+// Failure is deliberately NON-fatal: a host without nft / an OS firewall
+// shouldn't be unable to connect at all. We log loudly and carry on — no
+// worse than the prior behaviour, which never blocked IPv6. Hardening to
+// fail-closed is tracked as follow-up.
+func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.leakguard != nil {
+		return
+	}
+	if !isFullTunnel(a.Routes) {
+		return
+	}
+
+	mgr := firewall.New(c.log)
+	if err := mgr.BlockIPv6(); err != nil {
+		c.log.Warn("IPv6 leak protection failed; IPv6 traffic may bypass the tunnel — block it manually or run with privileges", "err", err)
+		return
+	}
+	c.leakguard = mgr
+}
+
+// isFullTunnel reports whether any pushed route is a default route (/0),
+// i.e. the client is redirecting all traffic through the tunnel. Invalid
+// CIDRs are ignored: ensureRoutes runs first and is the authority on route
+// validity — it has already failed the connection before we get here.
+func isFullTunnel(routes []string) bool {
+	for _, raw := range routes {
+		if p, err := netip.ParsePrefix(raw); err == nil && p.Bits() == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureDNS pushes the resolvers from AssignIP into the OS resolver
