@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -41,22 +42,35 @@ func (d *darwinRunner) BlockIPv6() error {
 	for _, svc := range svcs {
 		mode, err := d.getV6Mode(svc)
 		if err != nil {
-			_ = d.Restore() // undo whatever we changed before this one
-			return fmt.Errorf("get IPv6 mode for %q: %w", svc, err)
+			return d.restoreOnError(fmt.Errorf("get IPv6 mode for %q: %w", svc, err))
 		}
 		if mode == "Off" {
 			continue // already off; nothing to change or restore
 		}
+		if mode == "Manual" {
+			// We don't capture the static address/prefix/router, so Restore
+			// can only return the service to Automatic — surface the loss.
+			slog.Default().Warn("service has a static IPv6 config; leak protection will restore it as Automatic, dropping the manual address", "service", svc)
+		}
 		if err := d.setV6(svc, "-setv6off"); err != nil {
-			_ = d.Restore()
-			return fmt.Errorf("disable IPv6 for %q: %w", svc, err)
+			return d.restoreOnError(fmt.Errorf("disable IPv6 for %q: %w", svc, err))
 		}
 		// Record only after a successful change, so Restore touches exactly
 		// the services we modified — never one whose setV6 failed and was
-		// left on its original (possibly Manual) config.
+		// left on its original config.
 		d.saved[svc] = mode
 	}
 	return nil
+}
+
+// restoreOnError rolls back on a BlockIPv6 failure path and folds any
+// restore failure into the returned error, so a partial rollback that
+// leaves IPv6 off on some services isn't silently lost.
+func (d *darwinRunner) restoreOnError(err error) error {
+	if rerr := d.Restore(); rerr != nil {
+		return fmt.Errorf("%w (partial restore also failed: %v)", err, rerr)
+	}
+	return err
 }
 
 func (d *darwinRunner) Restore() error {
@@ -112,11 +126,13 @@ func (d *darwinRunner) listEnabledServices() ([]string, error) {
 	return svcs, nil
 }
 
-// getV6Mode parses the "IPv6:" line of `networksetup -getinfo <svc>`.
+// getV6Mode parses the "IPv6:" line of `networksetup -getv6settings <svc>`.
+// -getv6settings returns only the IPv6 configuration (mode on the first
+// line), which is more stable than -getinfo's combined dump.
 func (d *darwinRunner) getV6Mode(svc string) (string, error) {
-	out, err := exec.Command("networksetup", "-getinfo", svc).CombinedOutput()
+	out, err := exec.Command("networksetup", "-getv6settings", svc).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("getinfo %q: %w (%s)", svc, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("getv6settings %q: %w (%s)", svc, err, strings.TrimSpace(string(out)))
 	}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
@@ -125,7 +141,7 @@ func (d *darwinRunner) getV6Mode(svc string) (string, error) {
 			return strings.TrimSpace(v), nil
 		}
 	}
-	return "", fmt.Errorf("no IPv6 line in getinfo output for %q", svc)
+	return "", fmt.Errorf("no IPv6 line in getv6settings output for %q", svc)
 }
 
 func (d *darwinRunner) setV6(svc, flag string) error {

@@ -11,6 +11,12 @@ import (
 // ruleName is the Windows Firewall rule we add and later delete by name.
 const ruleName = "vpnio-leakguard-ipv6"
 
+// globalUnicastV6Range is GlobalUnicastV6 (2000::/3) written as an explicit
+// start-end range. netsh advfirewall accepts start-end ranges reliably
+// across Windows versions, whereas a non-byte-aligned CIDR like /3 isn't
+// universally parsed by older builds.
+const globalUnicastV6Range = "2000::-3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+
 // newRunner returns the Windows Runner, backed by `netsh advfirewall`.
 func newRunner() Runner { return netshRunner{} }
 
@@ -29,7 +35,7 @@ func (netshRunner) BlockIPv6() error {
 		"advfirewall", "firewall", "add", "rule",
 		"name="+ruleName,
 		"dir=out", "action=block",
-		"remoteip="+GlobalUnicastV6,
+		"remoteip="+globalUnicastV6Range,
 	)
 }
 

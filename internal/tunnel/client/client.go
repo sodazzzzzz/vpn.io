@@ -158,14 +158,18 @@ func (c *Client) Run(ctx context.Context) error {
 	c.resolvers = nil
 	c.leakguard = nil
 	c.mu.Unlock()
+	// Tear down in reverse of install (leak-block → routes → DNS): drop DNS,
+	// then the routes, and unblock IPv6 LAST. That preserves the invariant
+	// "IPv6 stays blocked while the IPv4 default still points into the
+	// tunnel" — important once a kill-switch is layered on here.
 	if dm != nil {
 		dm.Remove()
 	}
-	if fm != nil {
-		fm.Remove()
-	}
 	if rm != nil {
 		rm.Remove()
+	}
+	if fm != nil {
+		fm.Remove()
 	}
 	return err
 }
