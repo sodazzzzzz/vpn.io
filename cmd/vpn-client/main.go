@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/govpn/internal/firewall"
 	"github.com/govpn/internal/tun"
 	"github.com/govpn/internal/tunnel/client"
 )
@@ -34,16 +35,28 @@ func main() {
 		recMin     = flag.Duration("reconnect-min", 1*time.Second, "min reconnect backoff")
 		recMax     = flag.Duration("reconnect-max", 60*time.Second, "max reconnect backoff")
 		logLevel   = flag.String("log-level", "info", "debug|info|warn|error")
+		clearFW    = flag.Bool("clear-firewall", false, "remove any leftover leak-protection/kill-switch firewall rules and exit (best-effort; recovers a network locked after a crash)")
 	)
 	flag.Parse()
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
+
+	// Escape hatch: clear stale rules and exit. Runs without a tunnel and
+	// without the connection flags below.
+	if *clearFW {
+		if err := firewall.Clear(log); err != nil {
+			log.Warn("clear-firewall reported an error (this often just means there was nothing to remove)", "err", err)
+		} else {
+			log.Info("vpn-client: leak-protection rules cleared")
+		}
+		return
+	}
 
 	if *server == "" || *certFile == "" || *keyFile == "" {
 		fmt.Fprintln(os.Stderr, "vpn-client: -server, -cert, -key are required")
 		flag.Usage()
 		os.Exit(2)
 	}
-
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)}))
 
 	dev, err := tun.Open(*tunName, *mtu)
 	if err != nil {

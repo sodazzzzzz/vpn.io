@@ -25,10 +25,12 @@ func newRunner(*slog.Logger) Runner { return netshRunner{} }
 
 type netshRunner struct{}
 
-// BlockIPv6 adds a single outbound block rule for GlobalUnicastV6. Block
-// rules take precedence over allow rules in Windows Firewall, so this drops
-// internet-bound IPv6 regardless of the default outbound policy.
-func (netshRunner) BlockIPv6() error {
+// Enable adds a single outbound block rule for GlobalUnicastV6. Block rules
+// take precedence over allow rules in Windows Firewall, so this drops
+// internet-bound IPv6 regardless of the default outbound policy. The
+// Windows kill-switch (WFP) is a follow-up, so the kill-switch fields of
+// cfg are ignored here.
+func (netshRunner) Enable(_ Config) error {
 	// Drop any leftover rule from a previous crashed run first: netsh lets
 	// several rules share a name, so a bare add could accumulate
 	// duplicates. delete returns nonzero when nothing matches — expected,
@@ -45,6 +47,12 @@ func (netshRunner) BlockIPv6() error {
 
 // Restore deletes the rule by name.
 func (netshRunner) Restore() error {
+	return runNetsh("advfirewall", "firewall", "delete", "rule", "name="+ruleName)
+}
+
+// Clear is the stateless escape hatch: deleting by name needs no saved
+// state, so it works from a fresh process recovering after a crash.
+func (netshRunner) Clear() error {
 	return runNetsh("advfirewall", "firewall", "delete", "rule", "name="+ruleName)
 }
 
