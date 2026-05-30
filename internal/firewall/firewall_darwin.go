@@ -37,7 +37,10 @@ func (d *darwinRunner) BlockIPv6() error {
 		return err
 	}
 	if len(svcs) == 0 {
-		return fmt.Errorf("no enabled network services found")
+		// No active services means no surface for an IPv6 leak — not an
+		// error. (Erroring here would latch the client's leakguardOff flag
+		// and skip protection even after an interface is later brought up.)
+		return nil
 	}
 	d.saved = make(map[string]string, len(svcs))
 	for _, svc := range svcs {
@@ -81,7 +84,7 @@ func (d *darwinRunner) Restore() error {
 	var firstErr error
 	failed := make(map[string]string)
 	for svc, mode := range d.saved {
-		if err := d.setV6(svc, v6RestoreFlag(mode)); err != nil {
+		if err := d.setV6(svc, d.v6RestoreFlag(mode)); err != nil {
 			// Keep going so the remaining services are restored, but log
 			// every failure — only the first is folded into the return.
 			d.log.Warn("failed to restore IPv6 for service", "service", svc, "err", err)
@@ -107,13 +110,16 @@ func (d *darwinRunner) Restore() error {
 // re-applies it. A "Manual" (static) IPv6 config can't be re-applied
 // without its address/router, which we didn't capture; falling back to
 // automatic is the safe, near-universal choice for a client.
-func v6RestoreFlag(mode string) string {
+func (d *darwinRunner) v6RestoreFlag(mode string) string {
 	switch mode {
 	case "Link-local":
 		return "-setv6LinkLocal"
 	case "Automatic", "Manual":
 		return "-setv6automatic"
 	default:
+		// An unrecognised mode (e.g. a future macOS addition) can't be
+		// reproduced exactly; Automatic is the safe default, but flag it.
+		d.log.Warn("unrecognised IPv6 mode on restore; falling back to Automatic", "mode", mode)
 		return "-setv6automatic"
 	}
 }

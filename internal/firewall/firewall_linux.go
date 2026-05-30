@@ -28,39 +28,36 @@ type nftRunner struct{}
 // `add` on an already-present table would abort the whole `-f -` batch.
 func (nftRunner) BlockIPv6() error {
 	// Ignore the delete error: it's expected when no stale table exists.
-	_ = runNft("", "delete", "table", "inet", tableName)
+	_ = runNftArgs("delete", "table", "inet", tableName)
 	ruleset := fmt.Sprintf(`add table inet %[1]s
 add chain inet %[1]s output { type filter hook output priority 0 ; policy accept ; }
 add rule inet %[1]s output ip6 daddr %[2]s drop
 `, tableName, GlobalUnicastV6)
-	return runNft(ruleset, "load leakguard ruleset")
+	return runNftFile(ruleset, "load leakguard ruleset")
 }
 
 // Restore drops the whole table. It's a no-op-safe delete: Remove only
 // calls us after BlockIPv6 succeeded, so the table is present.
 func (nftRunner) Restore() error {
-	return runNft("", "delete", "table", "inet", tableName)
+	return runNftArgs("delete", "table", "inet", tableName)
 }
 
-// runNft runs nft. When ruleset is non-empty it's loaded atomically via
-// `nft -f -` and label is used only as error context (a human description
-// of the whole ruleset, since no single argv represents it). Otherwise
-// label is the literal `nft` argument vector.
-func runNft(ruleset string, label ...string) error {
-	var cmd *exec.Cmd
-	if ruleset != "" {
-		cmd = exec.Command("nft", "-f", "-")
-		cmd.Stdin = strings.NewReader(ruleset)
-	} else {
-		cmd = exec.Command("nft", label...)
-	}
-	out, err := cmd.CombinedOutput()
+// runNftArgs runs `nft <args...>`.
+func runNftArgs(args ...string) error {
+	out, err := exec.Command("nft", args...).CombinedOutput()
 	if err != nil {
-		desc := "nft " + strings.Join(label, " ")
-		if ruleset != "" {
-			desc = "nft -f - (" + strings.Join(label, " ") + ")"
-		}
-		return fmt.Errorf("%s: %w (%s)", desc, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("nft %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// runNftFile loads ruleset atomically via `nft -f -`. label is purely
+// error context — no single argv represents the whole ruleset.
+func runNftFile(ruleset, label string) error {
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(ruleset)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("nft -f - (%s): %w (%s)", label, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

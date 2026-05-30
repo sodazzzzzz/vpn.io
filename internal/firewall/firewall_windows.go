@@ -39,6 +39,7 @@ func (netshRunner) BlockIPv6() error {
 		"name="+ruleName,
 		"dir=out", "action=block",
 		"remoteip="+globalUnicastV6Range,
+		"profile=any", // apply on all profiles, not just the active one
 	)
 }
 
