@@ -8,9 +8,9 @@
 //     remembered so Restore can put them back.
 //   - Windows: `netsh interface ipv4 set dnsservers` against the TUN
 //     adapter; Restore reverts that interface to DHCP.
-//   - Linux:   no-op + warning. /etc/resolv.conf hosts (systemd-resolved,
-//     NetworkManager, resolvconf, raw file…) vary too much to
-//     cover safely in a learning project.
+//   - Linux:   resolvectl (systemd-resolved) when that service is active;
+//     otherwise an atomic backup-and-rewrite of /etc/resolv.conf
+//     (regular files and symlinks are both snapshotted and restored).
 //
 // The Manager type is the cross-platform façade; per-OS files supply a
 // Runner via newRunner().
