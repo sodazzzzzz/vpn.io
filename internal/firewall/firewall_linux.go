@@ -22,13 +22,14 @@ func newRunner(*slog.Logger) Runner { return nftRunner{} }
 type nftRunner struct{}
 
 // BlockIPv6 (re)creates a dedicated inet table with an output-hook chain
-// that drops egress to GlobalUnicastV6. The whole ruleset is loaded
-// atomically from stdin; the add/delete/add dance makes it idempotent even
-// if a previous run left the table behind (e.g. after a crash).
+// that drops egress to GlobalUnicastV6. Any leftover table from a crashed
+// run is dropped first as a separate best-effort command, so the atomic
+// create below starts clean — and works even on old nft (<0.9.1), where
+// `add` on an already-present table would abort the whole `-f -` batch.
 func (nftRunner) BlockIPv6() error {
+	// Ignore the delete error: it's expected when no stale table exists.
+	_ = runNft("", "delete", "table", "inet", tableName)
 	ruleset := fmt.Sprintf(`add table inet %[1]s
-delete table inet %[1]s
-add table inet %[1]s
 add chain inet %[1]s output { type filter hook output priority 0 ; policy accept ; }
 add rule inet %[1]s output ip6 daddr %[2]s drop
 `, tableName, GlobalUnicastV6)

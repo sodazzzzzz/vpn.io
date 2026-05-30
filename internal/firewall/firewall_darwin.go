@@ -79,17 +79,27 @@ func (d *darwinRunner) Restore() error {
 		return nil
 	}
 	var firstErr error
+	failed := make(map[string]string)
 	for svc, mode := range d.saved {
 		if err := d.setV6(svc, v6RestoreFlag(mode)); err != nil {
 			// Keep going so the remaining services are restored, but log
 			// every failure — only the first is folded into the return.
 			d.log.Warn("failed to restore IPv6 for service", "service", svc, "err", err)
+			failed[svc] = mode // retain for a later retry
 			if firstErr == nil {
 				firstErr = fmt.Errorf("restore IPv6 for %q: %w", svc, err)
 			}
 		}
 	}
-	d.saved = nil
+	// Drop only the services we actually restored. Retaining the failures
+	// keeps the Manager's applied-on-error retry meaningful: a subsequent
+	// Restore re-attempts exactly the services still left with IPv6 off,
+	// instead of short-circuiting on a nil snapshot and falsely succeeding.
+	if len(failed) == 0 {
+		d.saved = nil
+	} else {
+		d.saved = failed
+	}
 	return firstErr
 }
 
