@@ -141,12 +141,29 @@ func (r *linuxRunner) restoreResolvConf() error {
 		return nil
 	}
 	if r.savedLink != "" {
-		if err := os.Remove(resolvConfPath); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return os.Symlink(r.savedLink, resolvConfPath)
+		return symlinkAtomic(r.savedLink, resolvConfPath)
 	}
 	return writeFileAtomic(resolvConfPath, r.savedData)
+}
+
+// symlinkAtomic recreates a symlink at path atomically: it builds the link
+// at a sibling temp name and renames it over path. A plain Remove+Symlink
+// could leave path missing if Symlink failed (no inodes, full disk),
+// breaking DNS with no resolv.conf at all; rename swaps it in or leaves the
+// existing file untouched.
+func symlinkAtomic(target, path string) error {
+	tmp := path + ".vpnio.tmp"
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Symlink(target, tmp); err != nil {
+		return fmt.Errorf("symlink %s -> %s: %w", tmp, target, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
+	}
+	return nil
 }
 
 // buildResolvConf renders the resolv.conf body for servers. Callers pass
