@@ -182,6 +182,12 @@ func buildResolvConf(servers []string) []byte {
 // which it swaps for our regular file rather than following.
 func writeFileAtomic(path string, content []byte) error {
 	tmp := path + ".vpnio.tmp"
+	// Drop any stale temp entry first: a leftover symlink here (e.g. from a
+	// crashed symlinkAtomic) would make os.WriteFile follow it and clobber
+	// the link target instead of creating our own regular file.
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.WriteFile(tmp, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
 	}
