@@ -20,6 +20,11 @@ type netshRunner struct{}
 // rules take precedence over allow rules in Windows Firewall, so this drops
 // internet-bound IPv6 regardless of the default outbound policy.
 func (netshRunner) BlockIPv6() error {
+	// Drop any leftover rule from a previous crashed run first: netsh lets
+	// several rules share a name, so a bare add could accumulate
+	// duplicates. delete returns nonzero when nothing matches — expected,
+	// so its error is ignored (mirrors the Linux add/delete/add idempotency).
+	_ = runNetsh("advfirewall", "firewall", "delete", "rule", "name="+ruleName)
 	return runNetsh(
 		"advfirewall", "firewall", "add", "rule",
 		"name="+ruleName,

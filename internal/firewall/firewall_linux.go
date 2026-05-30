@@ -51,7 +51,12 @@ func runNft(stdin string, args ...string) error {
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("nft %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		desc := "nft " + strings.Join(args, " ")
+		if stdin != "" {
+			// The real command was `nft -f -`; args are only a label.
+			desc = "nft -f - (" + strings.Join(args, " ") + ")"
+		}
+		return fmt.Errorf("%s: %w (%s)", desc, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

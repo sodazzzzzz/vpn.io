@@ -94,8 +94,10 @@ func TestRemove_BeforeBlockIsNoOp(t *testing.T) {
 }
 
 func TestRemove_FailedRestoreKeepsApplied(t *testing.T) {
-	// If Restore fails we stay applied, so a later retry still attempts it
-	// rather than silently leaving IPv6 blocked.
+	// If Restore fails, applied stays true rather than being cleared. In
+	// the current client lifecycle the Manager is abandoned after Run()
+	// exits, so nothing retries — but a later explicit Remove() would try
+	// again instead of treating a failed restore as done.
 	r := &mockRunner{restoreErr: errors.New("nope")}
 	m := newWithRunner(discard(), r)
 	if err := m.BlockIPv6(); err != nil {

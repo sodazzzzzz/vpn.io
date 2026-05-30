@@ -44,14 +44,17 @@ func (d *darwinRunner) BlockIPv6() error {
 			_ = d.Restore() // undo whatever we changed before this one
 			return fmt.Errorf("get IPv6 mode for %q: %w", svc, err)
 		}
-		d.saved[svc] = mode
 		if mode == "Off" {
-			continue // already off; nothing to do or restore
+			continue // already off; nothing to change or restore
 		}
 		if err := d.setV6(svc, "-setv6off"); err != nil {
 			_ = d.Restore()
 			return fmt.Errorf("disable IPv6 for %q: %w", svc, err)
 		}
+		// Record only after a successful change, so Restore touches exactly
+		// the services we modified — never one whose setV6 failed and was
+		// left on its original (possibly Manual) config.
+		d.saved[svc] = mode
 	}
 	return nil
 }
@@ -62,9 +65,6 @@ func (d *darwinRunner) Restore() error {
 	}
 	var firstErr error
 	for svc, mode := range d.saved {
-		if mode == "Off" {
-			continue // we never changed it
-		}
 		if err := d.setV6(svc, v6RestoreFlag(mode)); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("restore IPv6 for %q: %w", svc, err)
 		}

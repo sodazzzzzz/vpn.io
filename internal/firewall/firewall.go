@@ -40,7 +40,9 @@ type Runner interface {
 	Restore() error
 }
 
-// Manager owns one BlockIPv6→Remove lifecycle.
+// Manager owns one BlockIPv6→Remove lifecycle. It is not safe for
+// concurrent use: callers must serialize BlockIPv6 and Remove (the VPN
+// client does so under its own mutex).
 type Manager struct {
 	log     *slog.Logger
 	runner  Runner

@@ -277,11 +277,14 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
 
+	// Block IPv6 BEFORE flipping the IPv4 default into the tunnel, so there
+	// is no window where v4 is already tunnelled but v6 still leaks out the
+	// open interface.
+	c.ensureLeakProtection(assign)
+
 	if err := c.ensureRoutes(assign, tlsConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
-
-	c.ensureLeakProtection(assign)
 
 	if err := c.ensureDNS(assign); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
@@ -368,8 +371,9 @@ func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
 
 // isFullTunnel reports whether any pushed route is a default route (/0),
 // i.e. the client is redirecting all traffic through the tunnel. Invalid
-// CIDRs are ignored: ensureRoutes runs first and is the authority on route
-// validity — it has already failed the connection before we get here.
+// CIDRs are ignored here: ensureRoutes is the authority on route validity
+// and aborts the connection on a bad CIDR. (We may briefly block IPv6 for
+// an attempt that then fails; teardown undoes it.)
 func isFullTunnel(routes []string) bool {
 	for _, raw := range routes {
 		if p, err := netip.ParsePrefix(raw); err == nil && p.Bits() == 0 {
