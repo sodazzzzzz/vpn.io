@@ -50,6 +50,21 @@ func TestBuildKillSwitchRuleset_StrictOmitsLAN(t *testing.T) {
 	}
 }
 
+func TestBuildKillSwitchRuleset_IPv6Server(t *testing.T) {
+	// The transport can run over IPv6 even though the data plane is v4;
+	// nftables rejects `ip daddr <v6>`, so a v6 server must use `ip6 daddr`.
+	rs := buildKillSwitchRuleset(Config{
+		ServerIP: netip.MustParseAddr("2001:db8::1"),
+		TunIface: "tun0",
+	})
+	if strings.Contains(rs, "ip daddr 2001:db8::1") {
+		t.Errorf("IPv6 server must use 'ip6 daddr', not 'ip daddr'\n---\n%s", rs)
+	}
+	if !strings.Contains(rs, "ip6 daddr 2001:db8::1 accept") {
+		t.Errorf("IPv6 server pin-hole missing\n---\n%s", rs)
+	}
+}
+
 func TestBuildKillSwitchRuleset_OmitsUnsetServerAndTun(t *testing.T) {
 	rs := buildKillSwitchRuleset(Config{AllowLAN: false})
 	if strings.Contains(rs, "ip daddr  accept") || strings.Contains(rs, "oifname \"\" accept") {

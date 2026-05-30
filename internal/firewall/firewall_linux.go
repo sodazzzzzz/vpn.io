@@ -18,6 +18,9 @@ const tableName = "vpnio_leakguard"
 // when AllowLAN is set: RFC1918 private space, link-local, multicast and
 // the limited broadcast address. None are internet-routable, so permitting
 // them keeps LAN devices reachable without opening an external leak.
+//
+// Intentionally IPv4-only: the data plane is IPv4, and all IPv6 is dropped
+// by the chain's default policy regardless of AllowLAN (no v6 LAN/ULA path).
 var lanPrefixes = []string{
 	"10.0.0.0/8",
 	"172.16.0.0/12",
@@ -67,9 +70,15 @@ func buildKillSwitchRuleset(cfg Config) string {
 	}
 
 	// The tunnel transport to the server must survive the kill-switch,
-	// otherwise the tunnel could never (re)connect.
+	// otherwise the tunnel could never (re)connect. nftables' `ip daddr` is
+	// IPv4-only, so use `ip6 daddr` for a v6 server — the transport may run
+	// over IPv6 even though the data plane is IPv4.
 	if cfg.ServerIP.IsValid() {
-		fmt.Fprintf(&b, "add rule inet %s output ip daddr %s accept\n", tableName, cfg.ServerIP)
+		fam := "ip"
+		if cfg.ServerIP.Is6() {
+			fam = "ip6"
+		}
+		fmt.Fprintf(&b, "add rule inet %s output %s daddr %s accept\n", tableName, fam, cfg.ServerIP)
 	}
 
 	// DHCP client, so the lease can renew while the switch is up. Matches
