@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/govpn/internal/dns"
+	"github.com/govpn/internal/firewall"
 	"github.com/govpn/internal/route"
 	"github.com/govpn/internal/tun"
 	"github.com/govpn/internal/tunnel"
@@ -83,9 +84,11 @@ type Client struct {
 	tlsConfig *tls.Config
 
 	mu           sync.Mutex
-	configuredIP string         // empty until first AssignIP triggers tun.Configure
-	routes       *route.Manager // non-nil after first successful Install
-	resolvers    *dns.Manager   // non-nil after first successful Apply
+	configuredIP string            // empty until first AssignIP triggers tun.Configure
+	routes       *route.Manager    // non-nil after first successful Install
+	resolvers    *dns.Manager      // non-nil after first successful Apply
+	leakguard    *firewall.Manager // non-nil after IPv6 leak protection is enabled
+	leakguardOff bool              // a block attempt failed; don't retry/re-warn each reconnect
 }
 
 // New constructs a Client. dev must already be Open()ed; ownership stays
@@ -151,14 +154,23 @@ func (c *Client) Run(ctx context.Context) error {
 	c.mu.Lock()
 	rm := c.routes
 	dm := c.resolvers
+	fm := c.leakguard
 	c.routes = nil
 	c.resolvers = nil
+	c.leakguard = nil
 	c.mu.Unlock()
+	// Tear down in reverse of install (leak-block → routes → DNS): drop DNS,
+	// then the routes, and unblock IPv6 LAST. That preserves the invariant
+	// "IPv6 stays blocked while the IPv4 default still points into the
+	// tunnel" — important once a kill-switch is layered on here.
 	if dm != nil {
 		dm.Remove()
 	}
 	if rm != nil {
 		rm.Remove()
+	}
+	if fm != nil {
+		fm.Remove()
 	}
 	return err
 }
@@ -270,6 +282,11 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
 
+	// Block IPv6 BEFORE flipping the IPv4 default into the tunnel, so there
+	// is no window where v4 is already tunnelled but v6 still leaks out the
+	// open interface.
+	c.ensureLeakProtection(assign)
+
 	if err := c.ensureRoutes(assign, tlsConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
@@ -325,6 +342,53 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 	c.routes = mgr
 	c.log.Info("system routes installed", "count", len(a.Routes), "via", tunGW, "server-pinhole", serverIP)
 	return nil
+}
+
+// ensureLeakProtection blocks routable IPv6 egress on the first AssignIP
+// that makes this a full-tunnel client. The data plane is IPv4-only, so a
+// redirected IPv4 default leaves the host's untouched IPv6 default free to
+// carry traffic straight out the open network — a real address leak.
+// Blocking global-unicast IPv6 makes dual-stack apps fall back to IPv4,
+// which the tunnel carries. On reconnects (or split-tunnel) it's a no-op.
+//
+// Failure is deliberately NON-fatal: a host without nft / an OS firewall
+// shouldn't be unable to connect at all. We log loudly once and carry on —
+// no worse than the prior behaviour, which never blocked IPv6. The failure
+// causes (tool missing, no privileges) are static for the process, so we
+// don't retry or re-warn on every reconnect. Hardening to fail-closed is
+// tracked as follow-up.
+func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.leakguard != nil || c.leakguardOff {
+		return
+	}
+	if !isFullTunnel(a.Routes) {
+		return
+	}
+
+	mgr := firewall.New(c.log)
+	if err := mgr.BlockIPv6(); err != nil {
+		c.log.Warn("IPv6 leak protection failed; IPv6 traffic may bypass the tunnel — block it manually or run with privileges", "err", err)
+		c.leakguardOff = true
+		return
+	}
+	c.leakguard = mgr
+}
+
+// isFullTunnel reports whether any pushed route is a default route (/0),
+// i.e. the client is redirecting all traffic through the tunnel. Invalid
+// CIDRs are ignored here: ensureRoutes is the authority on route validity
+// and aborts the connection on a bad CIDR. (We may briefly block IPv6 for
+// an attempt that then fails; teardown undoes it.)
+func isFullTunnel(routes []string) bool {
+	for _, raw := range routes {
+		if p, err := netip.ParsePrefix(raw); err == nil && p.Bits() == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureDNS pushes the resolvers from AssignIP into the OS resolver
