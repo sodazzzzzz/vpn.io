@@ -282,10 +282,10 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
 
-	// Block IPv6 BEFORE flipping the IPv4 default into the tunnel, so there
-	// is no window where v4 is already tunnelled but v6 still leaks out the
-	// open interface.
-	c.ensureLeakProtection(assign)
+	// Enable leak protection BEFORE flipping the IPv4 default into the
+	// tunnel, so there's no window where v4 is already tunnelled but
+	// traffic still leaks out the open interface.
+	c.ensureLeakProtection(assign, tlsConn.RemoteAddr())
 
 	if err := c.ensureRoutes(assign, tlsConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
@@ -325,15 +325,10 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 		return fmt.Errorf("parse tunnel gateway %q: %w", a.Gateway, err)
 	}
 
-	tcp, ok := remote.(*net.TCPAddr)
-	if !ok || tcp == nil {
-		return fmt.Errorf("remote addr is not TCPAddr (%T)", remote)
+	serverIP, err := serverIPFromRemote(remote)
+	if err != nil {
+		return err
 	}
-	serverIP, ok := netip.AddrFromSlice(tcp.IP)
-	if !ok {
-		return fmt.Errorf("invalid server IP %v", tcp.IP)
-	}
-	serverIP = serverIP.Unmap() // 4-in-6 → 4
 
 	mgr := route.New(c.log, c.dev.Name(), tunGW, serverIP)
 	if err := mgr.Install(a.Routes); err != nil {
@@ -344,20 +339,20 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 	return nil
 }
 
-// ensureLeakProtection blocks routable IPv6 egress on the first AssignIP
-// that makes this a full-tunnel client. The data plane is IPv4-only, so a
-// redirected IPv4 default leaves the host's untouched IPv6 default free to
-// carry traffic straight out the open network — a real address leak.
-// Blocking global-unicast IPv6 makes dual-stack apps fall back to IPv4,
-// which the tunnel carries. On reconnects (or split-tunnel) it's a no-op.
+// ensureLeakProtection enables leak protection on the first AssignIP that
+// makes this a full-tunnel client. On Linux that's a kill-switch (egress is
+// default-deny except the tunnel, the server pin-hole, loopback, DHCP and
+// local networks), so a dropped tunnel can't leak; on macOS/Windows it's an
+// IPv6-only block (the data plane is IPv4-only, so a redirected IPv4 default
+// would otherwise leak all IPv6 out the open interface). On reconnects (or
+// split-tunnel) it's a no-op.
 //
 // Failure is deliberately NON-fatal: a host without nft / an OS firewall
-// shouldn't be unable to connect at all. We log loudly once and carry on —
-// no worse than the prior behaviour, which never blocked IPv6. The failure
-// causes (tool missing, no privileges) are static for the process, so we
-// don't retry or re-warn on every reconnect. Hardening to fail-closed is
-// tracked as follow-up.
-func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
+// shouldn't be unable to connect at all. We log loudly once and carry on.
+// The failure causes (tool missing, no privileges) are static for the
+// process, so we don't retry or re-warn on every reconnect. Hardening to
+// fail-closed is tracked as follow-up.
+func (c *Client) ensureLeakProtection(a tunnel.AssignIP, remote net.Addr) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -368,13 +363,40 @@ func (c *Client) ensureLeakProtection(a tunnel.AssignIP) {
 		return
 	}
 
+	serverIP, err := serverIPFromRemote(remote)
+	if err != nil {
+		c.log.Warn("leak protection skipped: cannot determine server IP", "err", err)
+		c.leakguardOff = true
+		return
+	}
+
 	mgr := firewall.New(c.log)
-	if err := mgr.BlockIPv6(); err != nil {
-		c.log.Warn("IPv6 leak protection failed; IPv6 traffic may bypass the tunnel — block it manually or run with privileges", "err", err)
+	cfg := firewall.Config{
+		ServerIP: serverIP,
+		TunIface: c.dev.Name(),
+		AllowLAN: true, // local networks stay reachable (LAN devices, DHCP)
+	}
+	if err := mgr.Enable(cfg); err != nil {
+		c.log.Warn("leak protection failed; traffic may bypass the tunnel — check privileges, or run 'vpn-client --clear-firewall' to unstick the network", "err", err)
 		c.leakguardOff = true
 		return
 	}
 	c.leakguard = mgr
+}
+
+// serverIPFromRemote extracts the VPN server's IP from the TLS connection's
+// remote address (used for both the route pin-hole and the kill-switch
+// allow rule).
+func serverIPFromRemote(remote net.Addr) (netip.Addr, error) {
+	tcp, ok := remote.(*net.TCPAddr)
+	if !ok || tcp == nil {
+		return netip.Addr{}, fmt.Errorf("remote addr is not TCPAddr (%T)", remote)
+	}
+	ip, ok := netip.AddrFromSlice(tcp.IP)
+	if !ok {
+		return netip.Addr{}, fmt.Errorf("invalid server IP %v", tcp.IP)
+	}
+	return ip.Unmap(), nil // 4-in-6 → 4
 }
 
 // isFullTunnel reports whether any pushed route is a default route (/0),
