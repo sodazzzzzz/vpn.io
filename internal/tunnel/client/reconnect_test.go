@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -62,8 +65,10 @@ func TestIsFatal_Classifies(t *testing.T) {
 		{"auth", ErrFatalAuth, true},
 		{"server", ErrFatalServer, true},
 		{"config", ErrFatalConfig, true},
-		{"ctx canceled", context.Canceled, true},
-		{"ctx deadline", context.DeadlineExceeded, true},
+		// Context cancellation is NOT fatal: the reconnect loop handles
+		// shutdown via ctx.Err() before consulting isFatal.
+		{"ctx canceled", context.Canceled, false},
+		{"ctx deadline", context.DeadlineExceeded, false},
 		{"wrapped auth", errors.Join(errors.New("tls"), ErrFatalAuth), true},
 		{"random network", errors.New("connection reset by peer"), false},
 		{"dial timeout", errors.New("dial tcp 1.2.3.4:8443: i/o timeout"), false},
@@ -72,6 +77,37 @@ func TestIsFatal_Classifies(t *testing.T) {
 		if got := isFatal(tc.err); got != tc.want {
 			t.Errorf("%s: isFatal(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
 		}
+	}
+}
+
+// A signal cancelling ctx mid-dial (DialContext returns context.Canceled)
+// must make the reconnect loop exit cleanly (nil), so main() exits 0 rather
+// than 1. Guards the ctx.Err()-before-isFatal ordering.
+func TestRunReconnectLoop_CleanExitOnCancelDuringDial(t *testing.T) {
+	c := &Client{
+		cfg: Config{
+			Server:           "10.255.255.1:8443", // unroutable; dial aborts on cancel before reaching it
+			ReconnectMin:     10 * time.Millisecond,
+			ReconnectMax:     10 * time.Millisecond,
+			HandshakeTimeout: time.Second,
+		},
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		tlsConfig: &tls.Config{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the dial → DialContext returns context.Canceled
+
+	done := make(chan error, 1)
+	go func() { done <- c.runReconnectLoop(ctx, make(chan []byte)) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runReconnectLoop returned %v, want nil on ctx-cancel during dial", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runReconnectLoop did not return after ctx cancellation")
 	}
 }
 

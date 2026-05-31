@@ -504,14 +504,19 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 	}
 
 	cancel()
-	_ = conn.Close() // unblock connReader if it's still in Read
+	// Unblock the session goroutines WITHOUT a second Close: the deferred
+	// Close is the single owner of closing conn (a double Close risks a
+	// use-after-close fd-reuse race). A past deadline on BOTH directions makes
+	// a parked Read (connReader) and a parked Write (outboundPump/keepalive,
+	// when the server has stopped reading) return promptly; each maps the
+	// resulting error to a clean exit since sessionCtx is already cancelled.
+	_ = conn.SetDeadline(time.Now())
 
-	// Drain remaining errors so wg.Wait completes. We've already picked
-	// firstErr; the rest are noise (typically nil from ctx-cancel exits).
-	go func() {
-		for range errCh {
-		}
-	}()
+	// errCh is buffered to one slot per goroutine, so every goroutine can send
+	// its single result and exit without a reader — wg.Wait can't deadlock on a
+	// blocked send, and no drain goroutine is needed. This still assumes the
+	// goroutines return: the conn-bound ones are unblocked by the deadline
+	// above, and all of them observe the cancelled sessionCtx.
 	wg.Wait()
 	close(errCh)
 
