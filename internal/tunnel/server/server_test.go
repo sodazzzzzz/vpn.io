@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -28,6 +27,7 @@ type harness struct {
 	caDir  string // root of the generated CA on disk
 	runErr chan error
 	cancel context.CancelFunc
+	logs   *recordingHandler // captures the server's structured log for assertions
 }
 
 // startServer brings up a Server bound to 127.0.0.1:0 with a fresh CA on
@@ -72,8 +72,8 @@ func startServer(t *testing.T, subnet, gateway, netmask string, opts ...func(*Co
 		o(&cfg)
 	}
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := New(cfg, dev, log)
+	logs := &recordingHandler{}
+	srv, err := New(cfg, dev, slog.New(logs))
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -91,7 +91,7 @@ func startServer(t *testing.T, subnet, gateway, netmask string, opts ...func(*Co
 
 	return &harness{
 		t: t, srv: srv, tun: dev, addr: srv.Addr().String(),
-		caPool: pool, caDir: caDir, runErr: runErr, cancel: cancel,
+		caPool: pool, caDir: caDir, runErr: runErr, cancel: cancel, logs: logs,
 	}
 }
 

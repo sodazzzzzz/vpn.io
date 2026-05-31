@@ -291,7 +291,7 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	// Kick any prior session for this CN. Done() lets us await its full
 	// teardown before allocating a fresh IP under the same identity.
 	if prev := s.registry.ByCN(cn); prev != nil {
-		s.log.Info("kicking previous session", "cn", cn)
+		s.auditKick(prev, rawConn.RemoteAddr())
 		prev.close()
 		<-prev.Done()
 	}
@@ -333,7 +333,7 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		_ = tlsConn.Close()
 		return
 	}
-	s.log.Info("client connected", "cn", cn, "ip", ip)
+	s.auditConnect(sess)
 
 	// Writer goroutine drains sess.outbound; reader returns when the
 	// connection ends, which closes sess (closing the conn) and unblocks
@@ -349,7 +349,7 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 
 	sess.close()
 	sessWG.Wait()
-	s.log.Info("client disconnected", "cn", cn, "ip", ip)
+	s.auditDisconnect(sess)
 }
 
 // sessionReader pulls frames from the client connection and either
