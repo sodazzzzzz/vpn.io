@@ -16,7 +16,11 @@ type recordingHandler struct {
 	records []slog.Record
 }
 
-func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+// Enabled mirrors the production Info threshold so Debug-level chatter
+// (anti-spoof/isolation drops) isn't cloned into records on every test.
+func (h *recordingHandler) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= slog.LevelInfo
+}
 
 func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
@@ -127,6 +131,12 @@ func TestServer_AuditKick(t *testing.T) {
 	}
 	if kick["cn"] != "alice" {
 		t.Errorf("kick cn = %q, want alice", kick["cn"])
+	}
+	if kick["tun_ip"] != "10.8.0.2" {
+		t.Errorf("kick tun_ip = %q, want 10.8.0.2 (the kicked session)", kick["tun_ip"])
+	}
+	if kick["remote"] == "" {
+		t.Error("kick event has empty remote (the kicked session)")
 	}
 	if kick["by_remote"] == "" {
 		t.Error("kick event has empty by_remote (the reconnecting client)")

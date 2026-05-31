@@ -333,6 +333,10 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		_ = tlsConn.Close()
 		return
 	}
+	// Start the session clock now (AssignIP sent = client truly connected),
+	// not at newSession — keeps disconnect duration free of admission /
+	// AssignIP-write latency. Only this goroutine reads sess.Start later.
+	sess.Start = time.Now()
 	s.auditConnect(sess)
 
 	// Writer goroutine drains sess.outbound; reader returns when the
