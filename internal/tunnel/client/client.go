@@ -508,15 +508,18 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 	// Close is the single owner of closing conn (a double Close risks a
 	// use-after-close fd-reuse race). A past deadline on BOTH directions makes
 	// a parked Read (connReader) and a parked Write (outboundPump/keepalive,
-	// when the server has stopped reading) return promptly; each maps the
-	// resulting error to a clean exit since sessionCtx is already cancelled.
+	// when the server has stopped reading) return promptly. The one spot it
+	// can't cover is connReader sitting in dev.Write (the TUN, not the conn);
+	// that unblocks only when the write completes, which it does promptly on a
+	// healthy device. Each goroutine then maps its error to a clean exit
+	// because sessionCtx is already cancelled.
 	_ = conn.SetDeadline(time.Now())
 
 	// errCh is buffered to one slot per goroutine, so every goroutine can send
 	// its single result and exit without a reader — wg.Wait can't deadlock on a
-	// blocked send, and no drain goroutine is needed. This still assumes the
-	// goroutines return: the conn-bound ones are unblocked by the deadline
-	// above, and all of them observe the cancelled sessionCtx.
+	// blocked send, and no drain goroutine is needed. (It still assumes the
+	// goroutines actually return; see the deadline note above plus the
+	// cancelled sessionCtx they all observe.)
 	wg.Wait()
 	close(errCh)
 

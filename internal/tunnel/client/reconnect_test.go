@@ -86,7 +86,7 @@ func TestIsFatal_Classifies(t *testing.T) {
 func TestRunReconnectLoop_CleanExitOnCancelDuringDial(t *testing.T) {
 	c := &Client{
 		cfg: Config{
-			Server:           "10.255.255.1:8443", // unroutable; dial aborts on cancel before reaching it
+			Server:           "10.255.255.1:8443", // never dialed: an already-cancelled ctx makes DialContext return context.Canceled before any socket is opened
 			ReconnectMin:     10 * time.Millisecond,
 			ReconnectMax:     10 * time.Millisecond,
 			HandshakeTimeout: time.Second,
