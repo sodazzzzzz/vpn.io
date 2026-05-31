@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"sync"
+	"time"
 )
 
 // sessionWriteBufferDepth is how many outbound packets a session may queue
@@ -21,6 +22,8 @@ type Session struct {
 	CN       string
 	IP       net.IP
 	Conn     net.Conn
+	Remote   net.Addr  // client's real source address, for audit logging
+	Start    time.Time // set at connect (handleConn) — basis for session duration
 	outbound chan []byte
 	closeCh  chan struct{}
 	doneCh   chan struct{} // closed when the session's handler has fully torn down
@@ -29,9 +32,12 @@ type Session struct {
 
 func newSession(cn string, ip net.IP, conn net.Conn) *Session {
 	return &Session{
-		CN:       cn,
-		IP:       ip,
-		Conn:     conn,
+		CN:     cn,
+		IP:     ip,
+		Conn:   conn,
+		Remote: conn.RemoteAddr(),
+		// Start is set at connect in handleConn (after AssignIP is sent), so
+		// session duration reflects tunnel uptime, not admission overhead.
 		outbound: make(chan []byte, sessionWriteBufferDepth),
 		closeCh:  make(chan struct{}),
 		doneCh:   make(chan struct{}),
