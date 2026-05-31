@@ -185,7 +185,9 @@ func (s *Server) Run(ctx context.Context) error {
 	s.connCancel = cancel
 	s.mu.Unlock()
 	defer cancel()
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		<-connCtx.Done()
 		s.shutdown()
 	}()
@@ -256,7 +258,10 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		return
 	}
 	handshakeOK := false
-	defer func() { release(!handshakeOK) }()
+	// Penalize the source only on a genuine handshake failure or timeout — not
+	// when we ourselves aborted it via server shutdown (parent ctx cancelled),
+	// which would punish clients merely caught in the shutdown window.
+	defer func() { release(!handshakeOK && ctx.Err() == nil) }()
 
 	// Force the handshake so we have peer certs available. The deadline (and
 	// binding to the server context) means a stuck client or a shutdown closes
