@@ -34,6 +34,9 @@ func main() {
 		mtu       = flag.Int("mtu", 1380, "TUN MTU")
 		tunName   = flag.String("tun-name", "", "TUN interface name (empty = driver picks)")
 		keepalive = flag.Duration("keepalive", 30*time.Second, "keepalive interval (0 = off)")
+		hsTimeout = flag.Duration("handshake-timeout", 10*time.Second, "max TLS handshake duration (0 = default)")
+		maxPerIP  = flag.Int("max-conns-per-ip", 16, "max concurrent connections per source IP (0 = unlimited)")
+		maxConns  = flag.Int("max-conns", 256, "max concurrent connections across all IPs (0 = unlimited; 0 also disables the per-IP failed-handshake throttle, which needs a global cap to stay bounded)")
 		logLevel  = flag.String("log-level", "info", "debug|info|warn|error")
 		routesRaw = flag.String("push-routes", "", "comma-separated CIDRs to push to clients (e.g. 0.0.0.0/0 for full-tunnel)")
 		dnsRaw    = flag.String("push-dns", "", "comma-separated DNS resolver IPs to push to clients (e.g. 1.1.1.1,9.9.9.9)")
@@ -46,18 +49,21 @@ func main() {
 	warnIfForwardingDisabled(log)
 
 	cfg := server.Config{
-		Listen:     *listen,
-		CACertFile: *caFile,
-		CertFile:   *certFile,
-		KeyFile:    *keyFile,
-		Subnet:     *subnet,
-		Gateway:    *gateway,
-		Netmask:    *netmask,
-		MTU:        *mtu,
-		TUNName:    *tunName,
-		Keepalive:  *keepalive,
-		PushRoutes: splitCSV(*routesRaw),
-		PushDNS:    splitCSV(*dnsRaw),
+		Listen:           *listen,
+		CACertFile:       *caFile,
+		CertFile:         *certFile,
+		KeyFile:          *keyFile,
+		Subnet:           *subnet,
+		Gateway:          *gateway,
+		Netmask:          *netmask,
+		MTU:              *mtu,
+		TUNName:          *tunName,
+		Keepalive:        *keepalive,
+		HandshakeTimeout: *hsTimeout,
+		MaxConnsPerIP:    *maxPerIP,
+		MaxConns:         *maxConns,
+		PushRoutes:       splitCSV(*routesRaw),
+		PushDNS:          splitCSV(*dnsRaw),
 	}
 
 	dev, err := tun.Open(cfg.TUNName, cfg.MTU)
