@@ -32,13 +32,17 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 			return nil
 		}
 
+		// A cancelled context means we're shutting down: exit cleanly (nil),
+		// whatever error the in-flight attempt surfaced. Checked BEFORE isFatal
+		// because DialContext returns context.Canceled when a signal cancels
+		// ctx mid-dial, and that must be exit 0, not a non-retryable failure.
+		if ctx.Err() != nil {
+			return nil
+		}
+
 		if isFatal(err) {
 			c.log.Error("non-retryable error; client exiting", "err", err)
 			return err
-		}
-
-		if ctx.Err() != nil {
-			return nil
 		}
 
 		if held >= reconnectResetAfter {
@@ -88,15 +92,18 @@ func backoff(minD, maxD time.Duration, attempt int) time.Duration {
 }
 
 // isFatal returns true when err must not trigger another reconnect attempt.
+//
+// Context cancellation is intentionally NOT treated as fatal here: shutdown is
+// detected by runReconnectLoop via ctx.Err() (checked before this), so a
+// context.Canceled/DeadlineExceeded surfaced by an in-flight dial is a clean
+// exit, not a non-retryable failure.
 func isFatal(err error) bool {
 	if err == nil {
 		return false
 	}
 	return errors.Is(err, ErrFatalAuth) ||
 		errors.Is(err, ErrFatalServer) ||
-		errors.Is(err, ErrFatalConfig) ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded)
+		errors.Is(err, ErrFatalConfig)
 }
 
 // classifyConnectError maps a connect-path error into either a fatal
