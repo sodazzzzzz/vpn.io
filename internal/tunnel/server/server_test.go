@@ -458,6 +458,72 @@ func TestServer_ShutsDownCleanlyIdle(t *testing.T) {
 	h.shutdown()
 }
 
+// A client that opens the TCP connection but never sends a ClientHello must
+// be closed by the server once the handshake deadline elapses, rather than
+// pinning a goroutine forever (issue #18).
+func TestServer_HandshakeTimeout(t *testing.T) {
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.HandshakeTimeout = 200 * time.Millisecond },
+	)
+	defer h.shutdown()
+
+	conn, err := net.DialTimeout("tcp", h.addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Send nothing. The server should give up on the handshake and close the
+	// connection well before our generous read deadline.
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	start := time.Now()
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("server did not close a stalled handshake")
+	}
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Fatalf("connection closed after %v; handshake deadline was not enforced", elapsed)
+	}
+}
+
+// A second connection from the same source IP beyond the per-IP cap must be
+// rejected before its handshake completes.
+func TestServer_RateLimitPerIP(t *testing.T) {
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.MaxConnsPerIP = 1 },
+	)
+	defer h.shutdown()
+
+	// First client takes the only per-IP slot and stays connected.
+	first := h.dialAndAssign("alice")
+	defer first.Close()
+
+	// Second client from 127.0.0.1 (different CN, same IP) must be rejected:
+	// the server closes the TCP connection before the TLS handshake finishes.
+	bob := h.issueClient("bob")
+	conn, err := h.dial([]tls.Certificate{bob})
+	if err == nil {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err = tunnel.ReadPacket(conn)
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("server admitted a second connection past the per-IP cap")
+	}
+}
+
+// dialAndAssign connects a freshly-issued client and consumes its AssignIP,
+// returning the live connection.
+func (h *harness) dialAndAssign(name string) *tls.Conn {
+	h.t.Helper()
+	cert := h.issueClient(name)
+	conn, err := h.dial([]tls.Certificate{cert})
+	if err != nil {
+		h.t.Fatalf("dial %s: %v", name, err)
+	}
+	h.expectAssignIP(conn)
+	return conn
+}
+
 // Server with PushRoutes/PushDNS configured must forward both into the
 // AssignIP control message sent at handshake.
 func TestServer_PushesRoutesAndDNS(t *testing.T) {

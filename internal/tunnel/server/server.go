@@ -36,6 +36,14 @@ import (
 	"github.com/govpn/internal/tunnel"
 )
 
+// defaultHandshakeTimeout caps a single TLS handshake when the operator does
+// not configure one. failedHandshakePenalty is how long a per-IP slot is held
+// after a failed handshake, throttling fast fail-and-retry floods.
+const (
+	defaultHandshakeTimeout = 10 * time.Second
+	failedHandshakePenalty  = 2 * time.Second
+)
+
 // Config carries every knob the server needs at start-up.
 type Config struct {
 	Listen     string // ":8443"
@@ -48,6 +56,18 @@ type Config struct {
 	MTU        int           // 1380
 	TUNName    string        // "" → driver picks
 	Keepalive  time.Duration // 0 → off
+
+	// HandshakeTimeout bounds how long a single TLS handshake may take. The
+	// handshake is also bound to the server's lifetime, so a stuck client or a
+	// shutdown closes the connection instead of pinning a goroutine. 0 → a
+	// built-in default is applied (see New); the handshake is never unbounded.
+	HandshakeTimeout time.Duration
+
+	// MaxConnsPerIP caps concurrent connections from a single source IP;
+	// MaxConns caps them across all IPs. Excess connections are rejected before
+	// the (expensive) TLS handshake. 0 → no limit on that dimension.
+	MaxConnsPerIP int
+	MaxConns      int
 
 	// PushRoutes are CIDRs the server tells every client to install via
 	// the tunnel. Empty = server doesn't push routes (client keeps its
@@ -68,10 +88,12 @@ type Server struct {
 	tun      tun.Device
 	pool     *ipalloc.Pool
 	registry *Registry
+	limiter  *connLimiter
 
-	mu       sync.Mutex
-	listener net.Listener
-	readyCh  chan struct{}
+	mu         sync.Mutex
+	listener   net.Listener
+	connCancel context.CancelFunc // cancels in-flight handshakes on shutdown
+	readyCh    chan struct{}
 
 	wg       sync.WaitGroup
 	closeCh  chan struct{}
@@ -107,6 +129,10 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("server: build ip pool: %w", err)
 	}
 
+	if cfg.HandshakeTimeout <= 0 {
+		cfg.HandshakeTimeout = defaultHandshakeTimeout
+	}
+
 	return &Server{
 		cfg:       cfg,
 		log:       log,
@@ -114,6 +140,7 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		tun:       dev,
 		pool:      pool,
 		registry:  NewRegistry(),
+		limiter:   newConnLimiter(cfg.MaxConnsPerIP, cfg.MaxConns, failedHandshakePenalty),
 		readyCh:   make(chan struct{}),
 		closeCh:   make(chan struct{}),
 	}, nil
@@ -150,14 +177,22 @@ func (s *Server) Run(ctx context.Context) error {
 	s.wg.Add(1)
 	go s.runTUNReader()
 
-	stopCtx, cancel := context.WithCancel(ctx)
+	// connCtx is cancelled by shutdown so in-flight handshakes abort promptly
+	// (HandshakeContext is bound to it) instead of pinning their goroutines
+	// past wg.Wait. It also fires shutdown when the parent ctx is cancelled.
+	connCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.connCancel = cancel
+	s.mu.Unlock()
 	defer cancel()
+	s.wg.Add(1)
 	go func() {
-		<-stopCtx.Done()
+		defer s.wg.Done()
+		<-connCtx.Done()
 		s.shutdown()
 	}()
 
-	acceptErr := s.acceptLoop()
+	acceptErr := s.acceptLoop(connCtx)
 	s.shutdown()
 	s.wg.Wait()
 
@@ -167,14 +202,14 @@ func (s *Server) Run(ctx context.Context) error {
 	return acceptErr
 }
 
-func (s *Server) acceptLoop() error {
+func (s *Server) acceptLoop(ctx context.Context) error {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
 			return err
 		}
 		s.wg.Add(1)
-		go s.handleConn(conn)
+		go s.handleConn(ctx, conn)
 	}
 }
 
@@ -187,6 +222,9 @@ func (s *Server) shutdown() {
 		s.mu.Lock()
 		if s.listener != nil {
 			_ = s.listener.Close()
+		}
+		if s.connCancel != nil {
+			s.connCancel()
 		}
 		s.mu.Unlock()
 		_ = s.tun.Close()
@@ -201,7 +239,7 @@ func (s *Server) shutdown() {
 // On exit it always: removes the session from the registry, releases its
 // IP, and closes the session's done channel so a same-CN reconnect can
 // proceed deterministically.
-func (s *Server) handleConn(rawConn net.Conn) {
+func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	defer s.wg.Done()
 
 	tlsConn, ok := rawConn.(*tls.Conn)
@@ -211,12 +249,31 @@ func (s *Server) handleConn(rawConn net.Conn) {
 		return
 	}
 
-	// Force the handshake so we have peer certs available.
-	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
+	// Reject floods before spending a handshake on them. The slot is held for
+	// the connection's lifetime and released below.
+	release, ok := s.limiter.acquire(host(rawConn.RemoteAddr()))
+	if !ok {
+		s.log.Debug("connection rejected by rate limit", "remote", rawConn.RemoteAddr())
+		_ = rawConn.Close()
+		return
+	}
+	handshakeOK := false
+	// Penalize the source only on a genuine handshake failure or timeout — not
+	// when we ourselves aborted it via server shutdown (parent ctx cancelled),
+	// which would punish clients merely caught in the shutdown window.
+	defer func() { release(!handshakeOK && ctx.Err() == nil) }()
+
+	// Force the handshake so we have peer certs available. The deadline (and
+	// binding to the server context) means a stuck client or a shutdown closes
+	// the connection instead of pinning this goroutine indefinitely.
+	hsCtx, cancel := context.WithTimeout(ctx, s.cfg.HandshakeTimeout)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(hsCtx); err != nil {
 		s.log.Info("tls handshake failed", "remote", rawConn.RemoteAddr(), "err", err)
 		_ = tlsConn.Close()
 		return
 	}
+	handshakeOK = true
 
 	state := tlsConn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
