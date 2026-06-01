@@ -23,6 +23,7 @@ const reconnectResetAfter = 30 * time.Second
 func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) error {
 	attempt := 0
 	for {
+		c.emitState(StateConnecting)
 		started := time.Now()
 		err := c.connectOnce(ctx, outbound)
 		held := time.Since(started)
@@ -51,6 +52,15 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 
 		d := backoff(c.cfg.ReconnectMin, c.cfg.ReconnectMax, attempt)
 		c.log.Info("reconnect scheduled", "in", d, "attempt", attempt+1, "err", err)
+
+		// Don't report "reconnecting" if a cancel already arrived (e.g. the
+		// user disconnected during backoff) — otherwise the controller sees a
+		// transient reconnecting→disconnected flip. Mirrors the ctx.Err()
+		// guard right after connectOnce above.
+		if ctx.Err() != nil {
+			return nil
+		}
+		c.emitState(StateReconnecting)
 
 		select {
 		case <-ctx.Done():
