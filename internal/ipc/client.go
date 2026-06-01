@@ -20,8 +20,12 @@ func Do(path string, req Request) (Response, error) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// One deadline for the whole round-trip — send and read back.
-	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
+	// One deadline for the whole round-trip — send and read back. If this
+	// fails the read below could block forever on a stuck daemon, so surface
+	// it rather than proceeding without a timeout.
+	if err := conn.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
+		return Response{}, fmt.Errorf("ipc: set deadline: %w", err)
+	}
 
 	if err := WriteRequest(conn, req); err != nil {
 		return Response{}, fmt.Errorf("ipc: send request: %w", err)
