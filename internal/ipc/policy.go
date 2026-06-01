@@ -10,6 +10,13 @@ package ipc
 // operator (the GUI-integration step wires in the desktop user's uid).
 type Policy struct {
 	AllowUID []uint32
+
+	// AllowGID matches only the peer's effective/primary group, not its
+	// supplementary groups: Linux SO_PEERCRED reports just the effective gid,
+	// and the macOS path checks the primary group (Groups[0]) only. A user
+	// granted access via a supplementary group (e.g. `usermod -aG vpn`) is
+	// therefore NOT matched — prefer AllowUID, or make it the user's primary
+	// group.
 	AllowGID []uint32
 }
 

@@ -12,7 +12,9 @@ import (
 // peerCred returns the user and (primary) group IDs of the process on the
 // other end of the unix socket, as recorded by the kernel (LOCAL_PEERCRED).
 // macOS reports the peer's effective uid and group list in an xucred; the
-// first group entry is the effective gid.
+// first group entry is the effective gid. Only that primary group is used
+// for authorization (Policy.AllowGID) — supplementary groups are not
+// consulted, matching the Linux SO_PEERCRED limitation.
 func peerCred(conn *net.UnixConn) (uid, gid uint32, err error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
