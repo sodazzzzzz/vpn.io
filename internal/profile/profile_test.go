@@ -315,14 +315,26 @@ func TestProfileStringRedactsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, s := range []string{
-		p.String(),
-		fmt.Sprintf("%v", p),
-		fmt.Sprintf("%+v", p),
-		fmt.Sprintf("%#v", p),
-	} {
+	// Cover both *Profile and Profile-value formatting: with a value receiver
+	// both must go through the redacting Stringer. (A pointer receiver would
+	// let the value forms fall back to fmt's default field dump — key bytes
+	// rendered as decimals, which "-----BEGIN" alone wouldn't catch, so we
+	// also assert the redacted form was produced.)
+	renders := map[string]string{
+		"String()":  p.String(),
+		"%v ptr":    fmt.Sprintf("%v", p),
+		"%+v ptr":   fmt.Sprintf("%+v", p),
+		"%#v ptr":   fmt.Sprintf("%#v", p),
+		"%v value":  fmt.Sprintf("%v", *p),
+		"%+v value": fmt.Sprintf("%+v", *p),
+		"%#v value": fmt.Sprintf("%#v", *p),
+	}
+	for name, s := range renders {
 		if strings.Contains(s, "-----BEGIN") {
-			t.Errorf("rendered profile leaked PEM material: %q", s)
+			t.Errorf("%s leaked PEM material: %q", name, s)
+		}
+		if !strings.Contains(s, "Profile{Server:") {
+			t.Errorf("%s did not go through the redacting String(): %q", name, s)
 		}
 	}
 	if !strings.Contains(p.String(), "alice") {

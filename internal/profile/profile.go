@@ -41,17 +41,17 @@ type Profile struct {
 
 // String renders a Profile without its credential bytes, so the private key
 // can't leak through fmt's %v/%s/%+v or a logger that stringifies values.
-// Use the fields directly when you actually need the PEM.
-func (p *Profile) String() string {
-	if p == nil {
-		return "<nil>"
-	}
+// The receiver is a value (not a pointer) on purpose: a *Profile picks up
+// this method too, but a Profile *value* would otherwise format by dumping
+// every field — key bytes included. Use the fields directly when you actually
+// need the PEM. (fmt prints "<nil>" for a nil *Profile on its own.)
+func (p Profile) String() string {
 	return fmt.Sprintf("Profile{Server:%s ServerName:%s CN:%s NotAfter:%s}",
 		p.Server, p.ServerName, p.CommonName, p.NotAfter.Format(time.RFC3339))
 }
 
 // GoString does the same for the %#v verb.
-func (p *Profile) GoString() string { return p.String() }
+func (p Profile) GoString() string { return p.String() }
 
 // Files names the on-disk inputs for Load. Server is the literal address
 // the user supplies (host:port), not a path; ServerName is optional.
