@@ -35,7 +35,7 @@ sudo packaging/systemd/uninstall.sh   # stop, disable, remove
 ```
 
 The unit uses a private runtime directory: systemd creates `/run/vpn-io`
-on start (mode 0755) and removes it on stop. The control socket lives at
+on start (mode 0750) and removes it on stop. The control socket lives at
 `/run/vpn-io/helper.sock`.
 
 ### macOS (launchd)
