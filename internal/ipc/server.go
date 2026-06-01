@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -45,24 +46,44 @@ func NewServer(ln net.Listener, h Handler, log *slog.Logger) *Server {
 // Serve accepts connections until ctx is cancelled or the listener fails.
 // Cancelling ctx closes the listener, which unblocks Accept; the resulting
 // error is reported as a clean shutdown (nil).
+//
+// Serve does not return until every in-flight handler has finished. That
+// ordering matters: the caller tears the tunnel down (ctrl.Disconnect) after
+// Serve returns, so a handler that is mid-Connect must not still be running —
+// otherwise it could start a session right after Disconnect and leave routes,
+// DNS and firewall rules applied as the process exits.
 func (s *Server) Serve(ctx context.Context) error {
+	// Stop the listener on ctx cancel; stopWatch ends the watcher when Serve
+	// returns for any other reason, so it never leaks.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
 	go func() {
-		<-ctx.Done()
-		_ = s.ln.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.ln.Close()
+		case <-stopWatch:
+		}
 	}()
 
+	var wg sync.WaitGroup
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
+				wg.Wait()
 				return nil // shutdown closed the listener
 			}
 			// Unauthorized peers are filtered inside the listener's Accept
 			// (it closes them and loops), so anything surfacing here is a
 			// real listener failure.
+			wg.Wait()
 			return fmt.Errorf("ipc: accept: %w", err)
 		}
-		go s.handle(conn)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handle(conn)
+		}()
 	}
 }
 
