@@ -16,9 +16,12 @@ ExecStart=/usr/local/bin/vpn-helper -socket /run/vpn-io/helper.sock -socket-mode
 # (see packaging/README.md). The default admits only root.
 
 # Private runtime directory for the control socket: systemd creates
-# /run/vpn-io on start and removes it on stop.
+# /run/vpn-io on start and removes it on stop. 0750 keeps it from being
+# world-traversable (the socket itself is root-only by default; this just
+# avoids advertising its existence). Widen it alongside the socket when
+# granting a non-root group access.
 RuntimeDirectory=vpn-io
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 
 Restart=on-failure
 RestartSec=2

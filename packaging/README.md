@@ -69,7 +69,10 @@ that group:
   ```
 
   (replace `1000` with the target gid; the empty `ExecStart=` clears the
-  original line). Then `sudo systemctl restart vpn-helper`.
+  original line). Then `sudo systemctl restart vpn-helper`. The runtime
+  directory is `0750 root:root` by default, so that group also needs to
+  reach the socket — add `RuntimeDirectoryMode=0755` to the same drop-in (or
+  group-own the directory) so a non-root member can traverse `/run/vpn-io`.
 
 - **launchd:** add `-allow-gid <gid>` to the `ProgramArguments` array in the
   plist, then reinstall.
