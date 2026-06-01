@@ -185,3 +185,32 @@ func TestDisconnectIdempotent(t *testing.T) {
 		t.Fatalf("Disconnect on idle: %v", err)
 	}
 }
+
+// TestConnectDisconnectRace hammers Connect/Disconnect from several
+// goroutines. Under -race this exercises the run()/Connect lifecycle
+// boundary (clearing active and closing done under the same lock) and
+// guards against double-close panics or deadlocks. Connect calls that lose
+// the race return "already connected" and are expected.
+func TestConnectDisconnectRace(t *testing.T) {
+	c, _ := newTestController(t, &fakeEngine{})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_ = c.Connect(validConnectReq()) // may be rejected while active
+				_ = c.Disconnect()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if err := c.Disconnect(); err != nil { // settle
+		t.Fatalf("final Disconnect: %v", err)
+	}
+	if st := c.Status().State; st != string(StateDisconnected) {
+		t.Fatalf("ended in state %q, want disconnected", st)
+	}
+}

@@ -30,9 +30,11 @@ func peerCred(conn *net.UnixConn) (uid, gid uint32, err error) {
 	if operr != nil {
 		return 0, 0, fmt.Errorf("ipc: getsockopt LOCAL_PEERCRED: %w", operr)
 	}
-	gid = 0
-	if xucred.Ngroups > 0 {
-		gid = xucred.Groups[0]
+	// A real process always has at least its effective gid. Ngroups==0 is
+	// anomalous; fail closed rather than defaulting gid to 0, which could
+	// otherwise match an AllowGID policy and admit an unauthorized peer.
+	if xucred.Ngroups == 0 {
+		return 0, 0, fmt.Errorf("ipc: LOCAL_PEERCRED returned no groups (Ngroups=0)")
 	}
-	return xucred.Uid, gid, nil
+	return xucred.Uid, xucred.Groups[0], nil
 }

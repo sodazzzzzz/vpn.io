@@ -148,9 +148,12 @@ func (c *Controller) run(ctx context.Context, eng engine, dev tun.Device, done c
 	} else {
 		c.setStateLocked(StateDisconnected)
 	}
-	c.mu.Unlock()
-
+	// Close under the lock so clearing c.active and signalling done happen
+	// atomically: a concurrent Connect can't observe active==false and start
+	// a new session in the gap before done is closed. close is non-blocking
+	// and Disconnect waits on the channel (not the mutex), so no deadlock.
 	close(done)
+	c.mu.Unlock()
 }
 
 // Disconnect tears down the active session and waits for it to finish. It
@@ -165,7 +168,7 @@ func (c *Controller) Disconnect() error {
 		return nil // nothing running
 	}
 	cancel()
-	<-done // run() releases the lock before closing done, so no deadlock
+	<-done // waits on the channel, not the mutex, so run()'s close-under-lock can't deadlock us
 	return nil
 }
 

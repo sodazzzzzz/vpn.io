@@ -173,6 +173,13 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 		return nil, err
 	}
 
+	// The raw credential PEM is no longer needed once tlsCfg holds the parsed
+	// key and certs. Drop the references so the private key in particular
+	// doesn't linger in the Client (and its memory/core dumps) for the whole
+	// session. Best-effort: the GC reclaims the backing arrays once no other
+	// reference remains; this just stops Client from being one such reference.
+	cfg.CACertPEM, cfg.CertPEM, cfg.KeyPEM = nil, nil, nil
+
 	return &Client{cfg: cfg, dev: dev, log: log, tlsConfig: tlsCfg}, nil
 }
 
