@@ -18,6 +18,9 @@
 .claude/*.lock
 .claude/settings.local.json
 
+# Generated UI mockup screenshots (regenerate from docs/ui/mockup.html)
+docs/ui/shot-*.png
+
 # IDE / editor
 .idea/
 

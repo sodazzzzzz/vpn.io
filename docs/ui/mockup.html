@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vpn.io — tray UI design</title>
+<style>
+/* ============================================================================
+   vpn.io — tray UI design system  ·  concept: "Quiet Signal"
+   Refined minimalism, Apple-faithful (pre-iOS-26 / pre-Liquid-Glass).
+   All product styling is driven by the design tokens in :root below.
+   The .deck / .gallery chrome is mockup-only scaffolding, clearly fenced off.
+   ============================================================================ */
+
+/* ---- TOKENS · light (default) ------------------------------------------- */
+:root {
+  /* surfaces */
+  --c-window:        #f5f5f7;   /* popover body / menu-bar material (opaque fallback) */
+  --c-surface:       #ffffff;   /* cards, controls, input wells when raised */
+  --c-fill:          rgba(118,118,128,0.08);  /* quiet control fill (inputs, rows) */
+  --c-fill-strong:   rgba(118,118,128,0.14);  /* hover on quiet fill */
+
+  /* text — AA-tuned: informational text ≥4.5:1, decorative text ≥3:1 */
+  --c-text:          #1d1d1f;   /* primary                       15.5:1 */
+  --c-text-2:        #636368;   /* secondary (informational)      5.5:1 */
+  --c-text-3:        #86868b;   /* tertiary (decorative/icons)    3.3:1 */
+  --c-on-accent:     #ffffff;
+
+  /* lines */
+  --c-separator:     rgba(60,60,67,0.12);   /* hairline on surfaces */
+  --c-border:        rgba(0,0,0,0.06);      /* outer popover hairline */
+
+  /* accent + semantic state.
+     --c-accent      = vivid system blue, used ONLY as a graphic (focus ring,
+                       spinner, connecting indicator) where the 3:1 bar applies.
+     --c-accent-fill = the blue behind white button text (white needs 4.5:1).
+     --c-link        = the blue used AS text (needs 4.5:1 on window + fill).
+     Splitting them lets the indicator stay true system-blue while text/buttons
+     stay AA-legible. */
+  --c-accent:        #007aff;   /* indicator / focus  (3.7:1 graphic) */
+  --c-accent-fill:   #0067d6;   /* primary button bg  (white 5.4:1)   */
+  --c-accent-tint:   rgba(0,122,255,0.10);
+  --c-link:          #0067d6;   /* accent as text     (4.9:1)         */
+  --c-good:          #2fa84f;   /* connected (muted system green) — icon/ring only */
+  --c-good-tint:     rgba(47,168,79,0.12);
+  --c-warn:          #e08600;   /* reconnecting (muted amber) */
+  --c-warn-tint:     rgba(224,134,0,0.12);
+  --c-bad:           #e0352b;   /* failed (muted red) — icon/tint */
+  --c-bad-tint:      rgba(224,53,43,0.10);
+  --c-danger-text:   #c9271d;   /* red AS text (Disconnect)  (4.6:1 on fill) */
+  --c-idle:          #8e8e93;   /* disconnected (neutral) */
+  --c-idle-tint:     rgba(142,142,147,0.12);
+
+  /* elevation */
+  --shadow-popover:  0 0 0 0.5px var(--c-border), 0 10px 30px rgba(0,0,0,0.16), 0 1px 2px rgba(0,0,0,0.08);
+  --shadow-control:  0 0.5px 1px rgba(0,0,0,0.10);
+
+  /* typography */
+  --font: -apple-system, "SF Pro Text", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "Menlo", "Consolas", monospace;
+  --fs-caption2: 11px;  --fs-caption: 12px;  --fs-foot: 13px;
+  --fs-body:     14px;  --fs-head:    15px;  --fs-title: 17px;
+  --fs-state:    21px;  --fs-timer:   26px;
+  --fw-reg: 400; --fw-med: 500; --fw-semi: 600; --fw-bold: 700;
+
+  /* radii */
+  --r-xs: 6px; --r-sm: 8px; --r-md: 10px; --r-lg: 12px; --r-pill: 980px;
+
+  /* spacing — 8-pt grid (with 2/4 half-steps) */
+  --s-1: 2px; --s-2: 4px; --s-3: 6px; --s-4: 8px; --s-5: 12px;
+  --s-6: 16px; --s-7: 20px; --s-8: 24px; --s-9: 32px; --s-10: 40px;
+
+  /* controls */
+  --h-action: 44px;   /* hero toggle */
+  --h-control: 36px;  /* secondary buttons / inputs */
+  --orb: 124px;       /* state indicator diameter */
+
+  /* motion */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);  /* Apple-ish ease-out */
+  --dur-1: 120ms; --dur-2: 200ms; --dur-3: 320ms;
+}
+
+/* ---- TOKENS · dark ------------------------------------------------------- */
+:root[data-theme="dark"] {
+  --c-window:        #1c1c1e;
+  --c-surface:       #2c2c2e;
+  --c-fill:          rgba(118,118,128,0.20);
+  --c-fill-strong:   rgba(118,118,128,0.32);
+
+  --c-text:          #f5f5f7;
+  --c-text-2:        #a1a1a6;
+  --c-text-3:        #8e8e93;
+  --c-on-accent:     #ffffff;
+
+  --c-separator:     rgba(84,84,88,0.55);
+  --c-border:        rgba(255,255,255,0.10);
+
+  --c-accent:        #0a84ff;  --c-accent-tint: rgba(10,132,255,0.18); /* indicator/focus */
+  --c-accent-fill:   #0a6fdc;  /* primary button bg (white 4.9:1) */
+  --c-link:          #4aa3ff;  /* accent as text   (6.5:1) */
+  --c-good:          #32d158;  --c-good-tint:   rgba(50,209,88,0.18);
+  --c-warn:          #ff9f0a;  --c-warn-tint:   rgba(255,159,10,0.18);
+  --c-bad:           #ff453a;  --c-bad-tint:    rgba(255,69,58,0.18);
+  --c-danger-text:   #ff6961;  /* red as text (Disconnect) (4.8:1 on fill) */
+  --c-idle:          #8e8e93;  --c-idle-tint:   rgba(142,142,147,0.18);
+
+  --shadow-popover:  0 0 0 0.5px var(--c-border), 0 12px 36px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.35);
+  --shadow-control:  0 0.5px 1px rgba(0,0,0,0.40);
+}
+
+/* per-state color resolution — set --st / --st-tint once on the tray, reuse everywhere */
+.tray[data-state="disconnected"] { --st: var(--c-idle);   --st-tint: var(--c-idle-tint); }
+.tray[data-state="connecting"]   { --st: var(--c-accent); --st-tint: var(--c-accent-tint); }
+.tray[data-state="connected"]    { --st: var(--c-good);   --st-tint: var(--c-good-tint); }
+.tray[data-state="reconnecting"] { --st: var(--c-warn);   --st-tint: var(--c-warn-tint); }
+.tray[data-state="failed"]       { --st: var(--c-bad);    --st-tint: var(--c-bad-tint); }
+
+/* ===========================================================================
+   PRODUCT COMPONENT — the tray popover
+   =========================================================================== */
+*, *::before, *::after { box-sizing: border-box; }
+
+.tray {
+  width: 360px;
+  background: var(--c-window);
+  color: var(--c-text);
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  user-select: none;
+}
+
+/* ---- title bar (also the window drag region in Wails) ------------------- */
+.titlebar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 0 var(--s-3) 0 var(--s-5);
+  -webkit-app-region: drag;     /* Wails: lets the user drag the window here */
+}
+.titlebar > .iconbtn, .titlebar > .profile { -webkit-app-region: no-drag; }
+
+/* profile selector chip */
+.profile {
+  display: flex; align-items: center; gap: var(--s-3);
+  height: 30px; padding: 0 var(--s-3) 0 var(--s-2);
+  border: none; background: transparent; cursor: pointer;
+  border-radius: var(--r-sm); color: var(--c-text);
+  font: inherit; max-width: 240px;
+  transition: background var(--dur-1) var(--ease);
+}
+.profile:hover { background: var(--c-fill); }
+.profile__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--st); flex: none;
+  box-shadow: 0 0 0 3px var(--st-tint);
+}
+.profile__name {
+  font-size: var(--fs-foot); font-weight: var(--fw-semi);
+  letter-spacing: -0.01em; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.profile__chev { color: var(--c-text-3); flex: none; margin-left: -2px; }
+
+.spacer { flex: 1; }
+
+.iconbtn {
+  width: 30px; height: 30px; flex: none;
+  display: grid; place-items: center;
+  border: none; background: transparent; cursor: pointer;
+  border-radius: var(--r-sm); color: var(--c-text-2);
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.iconbtn:hover { background: var(--c-fill); color: var(--c-text); }
+.iconbtn:active { background: var(--c-fill-strong); }
+
+/* ---- stage: the hero indicator + labels --------------------------------- */
+.stage {
+  display: flex; flex-direction: column; align-items: center;
+  padding: var(--s-2) var(--s-7) var(--s-6);
+  text-align: center;
+}
+
+.orb {
+  position: relative;
+  width: var(--orb); height: var(--orb);
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--st-tint);
+  margin-bottom: var(--s-6);
+  transition: background var(--dur-3) var(--ease);
+}
+.orb::after {            /* inner hairline ring */
+  content: ""; position: absolute; inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--st) 32%, transparent);
+}
+.orb__glyph { width: 50px; height: 50px; color: var(--st); position: relative; z-index: 1; }
+
+/* indeterminate progress arc — shown only while connecting / reconnecting.
+   A single arc rotating at constant (linear) speed, kept slow so the sweep
+   stays smooth and calm instead of whipping around. Easing is intentionally
+   NOT used: easing a full-circle loop makes it stutter once per turn; constant
+   speed + a longer period is what actually reads as fluid. */
+.orb__spin {
+  position: absolute; inset: -1px;
+  color: var(--st);
+  opacity: 0;
+  animation: orbspin 1.9s linear infinite;
+}
+.tray[data-state="connecting"] .orb__spin,
+.tray[data-state="reconnecting"] .orb__spin { opacity: 1; }
+@keyframes orbspin { to { transform: rotate(360deg); } }
+
+.state-label {
+  font-size: var(--fs-state); font-weight: var(--fw-semi);
+  letter-spacing: -0.022em; line-height: 1.15;
+  color: var(--c-text);
+}
+.state-sub {
+  margin-top: var(--s-3);
+  font-size: var(--fs-foot); color: var(--c-text-2);
+}
+.state-sub .server {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--c-text);
+}
+
+/* session timer — tabular figures so it doesn't jitter as digits change */
+.timer {
+  margin-top: var(--s-5);
+  font-size: var(--fs-timer); font-weight: var(--fw-med);
+  letter-spacing: 0.01em; color: var(--c-text);
+  font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+}
+.timer.is-hidden { display: none; }
+
+/* ---- error surface (failed) --------------------------------------------- */
+.notice {
+  margin: 0 var(--s-7) var(--s-6);
+  display: flex; gap: var(--s-4); align-items: flex-start;
+  padding: var(--s-5);
+  background: var(--c-bad-tint);
+  border-radius: var(--r-md);
+}
+.notice__icon { color: var(--c-bad); flex: none; margin-top: 1px; }
+.notice__text { font-size: var(--fs-foot); color: var(--c-text); line-height: 1.35; }
+.notice__text b { font-weight: var(--fw-semi); display: block; margin-bottom: 2px; }
+
+/* ---- primary action ----------------------------------------------------- */
+.action { padding: 0 var(--s-7) var(--s-7); }
+
+.btn {
+  width: 100%; height: var(--h-action);
+  border: none; border-radius: var(--r-md);
+  font-family: var(--font); font-size: var(--fs-head); font-weight: var(--fw-semi);
+  letter-spacing: -0.01em; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s-3);
+  transition: transform var(--dur-1) var(--ease), background var(--dur-1) var(--ease), opacity var(--dur-1);
+}
+.btn:active { transform: scale(0.985); }
+
+/* one keyboard-focus ring for every interactive control */
+.btn:focus-visible, .iconbtn:focus-visible, .profile:focus-visible,
+.cred:focus-visible, .disclosure__head:focus-visible, .seg button:focus-visible {
+  outline: 2px solid var(--c-accent); outline-offset: 2px;
+}
+.input:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 1px; }  /* clear keyboard ring */
+
+/* filled accent — the call to action when there's no live tunnel */
+.btn--primary { background: var(--c-accent-fill); color: var(--c-on-accent); box-shadow: var(--shadow-control); }
+.btn--primary:hover { background: color-mix(in srgb, var(--c-accent-fill) 92%, #000); }
+
+/* quiet filled — Disconnect (present but not alarming), and Cancel */
+.btn--quiet { background: var(--c-fill); color: var(--c-text); }
+.btn--quiet:hover { background: var(--c-fill-strong); }
+
+/* destructive text on quiet fill — Disconnect intent without shouting */
+.btn--quiet.btn--danger { color: var(--c-danger-text); }
+
+.btn[disabled] { opacity: 0.5; cursor: default; pointer-events: none; }
+
+/* secondary height variant for sheets */
+.btn--sm { height: var(--h-control); font-size: var(--fs-foot); }
+
+/* tiny spinner used inside the connecting/cancel button */
+.btn .mini-spin { width: 15px; height: 15px; animation: orbspin 1.6s linear infinite; opacity: 0.9; }
+
+/* ===========================================================================
+   IMPORT SHEET (second screen)
+   =========================================================================== */
+.sheet .titlebar { border-bottom: 0.5px solid var(--c-separator); }
+.sheet__title { margin: 0; font-size: var(--fs-head); font-weight: var(--fw-semi); letter-spacing: -0.01em; }
+
+.form { padding: var(--s-6) var(--s-7) var(--s-2); }
+
+.group-label {
+  font-size: var(--fs-caption); font-weight: var(--fw-semi);
+  letter-spacing: 0.02em; text-transform: uppercase;
+  color: var(--c-text-2); margin: var(--s-6) var(--s-1) var(--s-3);
+}
+.group-label:first-child { margin-top: 0; }
+
+.field { margin-bottom: var(--s-5); }
+.field__label { display: block; font-size: var(--fs-caption); color: var(--c-text-2); margin: 0 var(--s-1) var(--s-2); }
+.field__label .opt { color: var(--c-text-3); font-weight: var(--fw-reg); }
+
+.input {
+  width: 100%; height: var(--h-control);
+  padding: 0 var(--s-5);
+  background: var(--c-fill); color: var(--c-text);
+  border: 0.5px solid transparent; border-radius: var(--r-sm);
+  font: inherit; font-size: var(--fs-foot);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.input::placeholder { color: var(--c-text-3); }
+.input:focus { outline: none; background: var(--c-surface); border-color: var(--c-accent); }
+
+/* credential picker rows (CA / cert / key) */
+.cred {
+  display: flex; align-items: center; gap: var(--s-5);
+  width: 100%; padding: var(--s-4) var(--s-5);
+  background: var(--c-fill); border: 0.5px solid transparent;
+  border-radius: var(--r-sm); cursor: pointer; text-align: left;
+  color: var(--c-text); font: inherit;
+  margin-bottom: var(--s-3);
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1);
+}
+.cred:hover { background: var(--c-fill-strong); }
+.cred__icon { color: var(--c-text-3); flex: none; }
+.cred__body { flex: 1; min-width: 0; }
+.cred__role { font-size: var(--fs-foot); font-weight: var(--fw-med); }
+.cred__hint { font-size: var(--fs-caption); color: var(--c-text-2); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cred__action { font-size: var(--fs-caption); color: var(--c-link); font-weight: var(--fw-med); flex: none; }
+/* "set" state is carried by the green icon + border + the word "verified",
+   never by color alone — so the hint text stays neutral and AA-legible. */
+.cred.is-set { border-color: color-mix(in srgb, var(--c-good) 35%, transparent); }
+.cred.is-set .cred__icon { color: var(--c-good); }
+
+/* advanced disclosure */
+.disclosure { margin-top: var(--s-4); }
+.disclosure__head {
+  display: flex; align-items: center; gap: var(--s-3);
+  width: 100%; padding: var(--s-3) var(--s-1);
+  background: transparent; border: none; cursor: pointer;
+  color: var(--c-text-2); font: inherit; font-size: var(--fs-foot); font-weight: var(--fw-med);
+}
+.disclosure__head::-webkit-details-marker { display: none; }  /* old Safari default triangle */
+.disclosure__chev { transition: transform var(--dur-2) var(--ease); }
+.disclosure[open] .disclosure__chev { transform: rotate(90deg); }
+.disclosure__body { padding-top: var(--s-3); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-5); }
+
+.sheet .action-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4);
+  padding: var(--s-5) var(--s-7) var(--s-7);
+}
+
+/* ===========================================================================
+   reduced motion — kill the spinners, keep everything legible
+   =========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .orb__spin, .btn .mini-spin { animation: none; }
+  .orb__spin { opacity: 0.6; }
+  * { transition-duration: 1ms !important; }
+}
+
+/* ===========================================================================
+   MOCKUP SCAFFOLDING — not part of the product. Presents the gallery.
+   =========================================================================== */
+body {
+  margin: 0; min-height: 100vh;
+  font-family: var(--font); color: var(--c-text);
+  background:
+    radial-gradient(120% 80% at 50% -10%, color-mix(in srgb, var(--c-window) 70%, #888) 0%, transparent 60%),
+    var(--c-window);
+  transition: background var(--dur-2) var(--ease);
+}
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(120% 80% at 50% -10%, #2a2a2e 0%, transparent 55%),
+    #0e0e10;
+}
+.deck {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: var(--s-5);
+  padding: var(--s-5) var(--s-8);
+  backdrop-filter: saturate(180%) blur(20px);
+  background: color-mix(in srgb, var(--c-window) 72%, transparent);
+  border-bottom: 0.5px solid var(--c-separator);
+}
+.deck__brand { font-size: var(--fs-head); font-weight: var(--fw-bold); letter-spacing: -0.02em; }
+.deck__brand span { color: var(--c-text-3); font-weight: var(--fw-med); margin-left: var(--s-3); }
+.seg {
+  display: inline-flex; padding: 2px; gap: 2px;
+  background: var(--c-fill); border-radius: var(--r-sm);
+}
+.seg button {
+  border: none; background: transparent; cursor: pointer;
+  font: inherit; font-size: var(--fs-caption); font-weight: var(--fw-med);
+  color: var(--c-text-2); padding: 5px 12px; border-radius: var(--r-xs);
+}
+.seg button[aria-pressed="true"] { background: var(--c-surface); color: var(--c-text); box-shadow: var(--shadow-control); }
+.gallery {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 360px));
+  gap: var(--s-9); justify-content: center;
+  padding: var(--s-10) var(--s-8) 80px;
+}
+.cell { display: flex; flex-direction: column; align-items: center; gap: var(--s-5); }
+.cell__cap { font-size: var(--fs-caption); font-weight: var(--fw-med); color: var(--c-text-3); letter-spacing: 0.02em; }
+</style>
+</head>
+<body>
+
+<div class="deck">
+  <div class="deck__brand">vpn.io <span>tray UI · "Quiet Signal"</span></div>
+  <div class="spacer" style="flex:1"></div>
+  <div class="seg" role="group" aria-label="Theme">
+    <button type="button" id="t-light" aria-pressed="true" onclick="setTheme('light')">Light</button>
+    <button type="button" id="t-dark"  aria-pressed="false" onclick="setTheme('dark')">Dark</button>
+  </div>
+</div>
+
+<div class="gallery">
+
+  <!-- DISCONNECTED -->
+  <div class="cell">
+    <div class="cell__cap">disconnected</div>
+    <div class="tray" data-state="disconnected">
+      <div class="titlebar">
+        <button type="button" class="profile" aria-haspopup="menu" aria-expanded="false"><span class="profile__dot"></span><span class="profile__name">Home server</span>
+          <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <button type="button" class="iconbtn" title="Settings" aria-label="Settings">
+          <svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="stage">
+        <div class="orb"><svg aria-hidden="true" focusable="false" class="orb__glyph" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div>
+        <div class="state-label" role="status" aria-live="polite">Not connected</div>
+        <div class="state-sub">Tap connect to secure this device</div>
+      </div>
+      <div class="action"><button type="button" class="btn btn--primary">Connect</button></div>
+    </div>
+  </div>
+
+  <!-- CONNECTING -->
+  <div class="cell">
+    <div class="cell__cap">connecting</div>
+    <div class="tray" data-state="connecting">
+      <div class="titlebar">
+        <button type="button" class="profile" aria-haspopup="menu" aria-expanded="false"><span class="profile__dot"></span><span class="profile__name">Home server</span>
+          <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <button type="button" class="iconbtn" title="Settings" aria-label="Settings"><svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="stage">
+        <div class="orb">
+          <svg aria-hidden="true" focusable="false" class="orb__spin" viewBox="0 0 124 124" fill="none"><path d="M62 4a58 58 0 0 1 41 17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+          <svg aria-hidden="true" focusable="false" class="orb__glyph" viewBox="0 0 24 24" fill="none" style="opacity:.55"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="state-label" role="status" aria-live="polite">Connecting…</div>
+        <div class="state-sub"><span class="server">vpn.example.com:8443</span></div>
+      </div>
+      <div class="action"><button type="button" class="btn btn--quiet"><svg aria-hidden="true" focusable="false" class="mini-spin" viewBox="0 0 24 24" fill="none"><path d="M12 3a9 9 0 0 1 6.4 2.6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Cancel</button></div>
+    </div>
+  </div>
+
+  <!-- CONNECTED -->
+  <div class="cell">
+    <div class="cell__cap">connected (live)</div>
+    <div class="tray" data-state="connected">
+      <div class="titlebar">
+        <button type="button" class="profile" aria-haspopup="menu" aria-expanded="false"><span class="profile__dot"></span><span class="profile__name">Home server</span>
+          <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <button type="button" class="iconbtn" title="Settings" aria-label="Settings"><svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="stage">
+        <div class="orb"><svg aria-hidden="true" focusable="false" class="orb__glyph" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.7 11.8 11 14l4.3-4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="state-label" role="status" aria-live="polite">Connected</div>
+        <div class="state-sub"><span class="server">vpn.example.com:8443</span></div>
+        <div class="timer" id="liveTimer">00:00:00</div>
+      </div>
+      <div class="action"><button type="button" class="btn btn--quiet btn--danger">Disconnect</button></div>
+    </div>
+  </div>
+
+  <!-- RECONNECTING -->
+  <div class="cell">
+    <div class="cell__cap">reconnecting</div>
+    <div class="tray" data-state="reconnecting">
+      <div class="titlebar">
+        <button type="button" class="profile" aria-haspopup="menu" aria-expanded="false"><span class="profile__dot"></span><span class="profile__name">Home server</span>
+          <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <button type="button" class="iconbtn" title="Settings" aria-label="Settings"><svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="stage">
+        <div class="orb">
+          <svg aria-hidden="true" focusable="false" class="orb__spin" viewBox="0 0 124 124" fill="none"><path d="M62 4a58 58 0 0 1 41 17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+          <svg aria-hidden="true" focusable="false" class="orb__glyph" viewBox="0 0 24 24" fill="none" style="opacity:.55"><path d="M21 12a9 9 0 1 1-2.6-6.3M21 4v4h-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="state-label" role="status" aria-live="polite">Reconnecting…</div>
+        <div class="state-sub">Connection dropped · retrying</div>
+      </div>
+      <div class="action"><button type="button" class="btn btn--quiet btn--danger">Disconnect</button></div>
+    </div>
+  </div>
+
+  <!-- FAILED -->
+  <div class="cell">
+    <div class="cell__cap">failed</div>
+    <div class="tray" data-state="failed">
+      <div class="titlebar">
+        <button type="button" class="profile" aria-haspopup="menu" aria-expanded="false"><span class="profile__dot"></span><span class="profile__name">Home server</span>
+          <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <button type="button" class="iconbtn" title="Settings" aria-label="Settings"><svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="stage">
+        <div class="orb"><svg aria-hidden="true" focusable="false" class="orb__glyph" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 8v4.2M12 15.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+        <div class="state-label" role="status" aria-live="polite">Connection failed</div>
+      </div>
+      <div class="notice">
+        <svg aria-hidden="true" focusable="false" class="notice__icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v6M12 16v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <div class="notice__text"><b>Couldn't reach the server</b>tls: handshake timeout after 10s</div>
+      </div>
+      <div class="action"><button type="button" class="btn btn--primary">Try again</button></div>
+    </div>
+  </div>
+
+  <!-- IMPORT SHEET -->
+  <div class="cell">
+    <div class="cell__cap">add profile · import credentials</div>
+    <div class="tray sheet" data-state="disconnected">
+      <div class="titlebar">
+        <button type="button" class="iconbtn" title="Back" aria-label="Back"><svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14.5 5 8 12l6.5 7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <h1 class="sheet__title">Add profile</h1>
+        <div class="spacer"></div>
+      </div>
+      <div class="form">
+        <div class="field">
+          <label class="field__label" for="f-server">Server address</label>
+          <input id="f-server" class="input" placeholder="vpn.example.com:8443" value="vpn.example.com:8443">
+        </div>
+        <div class="field">
+          <label class="field__label" for="f-sni">TLS server name <span class="opt">— optional</span></label>
+          <input id="f-sni" class="input" placeholder="defaults to server host">
+        </div>
+
+        <div class="group-label">Credentials</div>
+
+        <button type="button" class="cred is-set">
+          <svg aria-hidden="true" focusable="false" class="cred__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m9.6 14.4 1.6 1.6 3.2-3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="cred__body"><div class="cred__role">CA certificate</div><div class="cred__hint">ca.pem · verified</div></div>
+          <span class="cred__action">Change</span>
+        </button>
+
+        <button type="button" class="cred is-set">
+          <svg aria-hidden="true" focusable="false" class="cred__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m9.6 14.4 1.6 1.6 3.2-3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="cred__body"><div class="cred__role">Client certificate</div><div class="cred__hint">client.crt · verified</div></div>
+          <span class="cred__action">Change</span>
+        </button>
+
+        <button type="button" class="cred">
+          <svg aria-hidden="true" focusable="false" class="cred__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <div class="cred__body"><div class="cred__role">Client key</div><div class="cred__hint">PEM private key — required</div></div>
+          <span class="cred__action">Choose…</span>
+        </button>
+
+        <details class="disclosure">
+          <summary class="disclosure__head" style="list-style:none">
+            <svg aria-hidden="true" focusable="false" class="disclosure__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Advanced
+          </summary>
+          <div class="disclosure__body">
+            <div class="row2">
+              <div class="field" style="margin:0">
+                <label class="field__label" for="f-mtu">MTU</label>
+                <input id="f-mtu" class="input" placeholder="1380" inputmode="numeric">
+              </div>
+              <div class="field" style="margin:0">
+                <label class="field__label" for="f-tun">TUN name</label>
+                <input id="f-tun" class="input" placeholder="auto">
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="action-row">
+        <button type="button" class="btn btn--quiet btn--sm">Cancel</button>
+        <button type="button" class="btn btn--primary btn--sm" disabled>Save</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  function setTheme(t){
+    document.documentElement.setAttribute('data-theme', t);
+    document.getElementById('t-light').setAttribute('aria-pressed', t==='light');
+    document.getElementById('t-dark').setAttribute('aria-pressed', t==='dark');
+  }
+  // theme=light|dark query override (used for screenshots); else honor system
+  const q = new URLSearchParams(location.search).get('theme');
+  if (q === 'dark' || q === 'light') setTheme(q);
+  else if (matchMedia('(prefers-color-scheme: dark)').matches) setTheme('dark');
+
+  // live session timer on the "connected" card
+  (function(){
+    const el = document.getElementById('liveTimer'); if(!el) return;
+    let s = 0;
+    const pad = n => String(n).padStart(2,'0');
+    setInterval(() => {
+      s++;
+      el.textContent = `${pad(Math.floor(s/3600))}:${pad(Math.floor(s/60)%60)}:${pad(s%60)}`;
+    }, 1000);
+  })();
+</script>
+</body>
+</html>
