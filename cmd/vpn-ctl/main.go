@@ -72,6 +72,12 @@ func runConnect(args []string) {
 		fs.Usage()
 		os.Exit(2)
 	}
+	// A negative MTU is user error: the daemon would silently coerce it to its
+	// default (mtu <= 0), hiding the typo. Reject it with a clear message.
+	if *mtu < 0 {
+		fmt.Fprintln(os.Stderr, "vpn-ctl connect: -mtu must not be negative")
+		os.Exit(2)
+	}
 
 	// Validate credentials locally first: a clear error here beats an opaque
 	// failure inside the daemon's TLS handshake later.
