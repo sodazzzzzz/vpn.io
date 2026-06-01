@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -27,9 +28,12 @@ type Profile struct {
 	Server     string // "vpn.example.com:8443"
 	ServerName string // SNI / verification host; defaults to Server's host
 
-	CACertPEM []byte
-	CertPEM   []byte
-	KeyPEM    []byte
+	// json:"-" keeps the credential bytes (the private key in particular)
+	// out of any accidental json.Marshal of a Profile; String/GoString cover
+	// the fmt verbs. Profile isn't a wire type — read the fields directly.
+	CACertPEM []byte `json:"-"`
+	CertPEM   []byte `json:"-"`
+	KeyPEM    []byte `json:"-"`
 
 	CommonName string    // client certificate CN
 	NotAfter   time.Time // client certificate expiry
@@ -91,8 +95,13 @@ func LoadPEM(caPEM, certPEM, keyPEM []byte, server, serverName string) (*Profile
 	if err != nil {
 		return nil, fmt.Errorf("invalid server address %q: %w", server, err)
 	}
-	if host == "" || port == "" {
-		return nil, fmt.Errorf("invalid server address %q: host and port are both required", server)
+	if host == "" {
+		return nil, fmt.Errorf("invalid server address %q: host is required", server)
+	}
+	// SplitHostPort accepts a non-numeric port ("host:abc"); require a real
+	// port number so a bad address fails here, not later at dial time.
+	if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+		return nil, fmt.Errorf("invalid server address %q: port must be a number in 1–65535", server)
 	}
 	if serverName == "" {
 		serverName = host

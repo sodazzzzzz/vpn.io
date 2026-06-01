@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -110,7 +111,12 @@ func TestInvalidServerAddress(t *testing.T) {
 	_, dir := testCA(t, "alice")
 	caPEM, certPEM, keyPEM := clientPEMs(t, dir, "alice")
 
-	for _, addr := range []string{"", "noport", "host:", ":8443"} {
+	for _, addr := range []string{
+		"", "noport", "host:", ":8443",
+		"host:abc",   // non-numeric port
+		"host:0",     // port out of range (low)
+		"host:70000", // port out of range (high)
+	} {
 		if _, err := LoadPEM(caPEM, certPEM, keyPEM, addr, ""); err == nil {
 			t.Errorf("address %q: expected error", addr)
 		}
@@ -321,5 +327,14 @@ func TestProfileStringRedactsKey(t *testing.T) {
 	}
 	if !strings.Contains(p.String(), "alice") {
 		t.Errorf("String() should include the CN, got %q", p.String())
+	}
+
+	// json.Marshal must not carry the credential bytes either (json:"-").
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "-----BEGIN") {
+		t.Errorf("json.Marshal leaked PEM material: %s", b)
 	}
 }
