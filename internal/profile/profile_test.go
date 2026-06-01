@@ -7,9 +7,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,11 +191,135 @@ func mintClient(t *testing.T, c *ca.CA, cn string, notBefore, notAfter time.Time
 		t.Fatalf("create certificate: %v", err)
 	}
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = keyToPEM(t, key)
+	return
+}
 
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+// keyToPEM marshals an EC private key to PKCS#8 PEM.
+func keyToPEM(t *testing.T, key *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatalf("marshal key: %v", err)
 	}
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	return
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
+// mintRootCA creates a self-signed CA that permits an intermediate beneath
+// it (the project's own CA is single-level, so this builds an independent
+// root to exercise chain building).
+func mintRootCA(t *testing.T) (cert *x509.Certificate, key *ecdsa.PrivateKey, certPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-root"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            2,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	cert, err = x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return cert, key, certPEM
+}
+
+// TestLoadWithIntermediateChain proves a leaf+intermediate bundle that
+// chains to the root (with only the root supplied as the CA) verifies — the
+// case the Intermediates pool in LoadPEM exists for. As a control, the leaf
+// alone must fail against the root.
+func TestLoadWithIntermediateChain(t *testing.T) {
+	rootCert, rootKey, rootPEM := mintRootCA(t)
+
+	// Intermediate CA, signed by the root.
+	interKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interTpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(10),
+		Subject:               pkix.Name{CommonName: "test-intermediate"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	interDER, err := x509.CreateCertificate(rand.Reader, interTpl, rootCert, &interKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatalf("create intermediate: %v", err)
+	}
+	interCert, err := x509.ParseCertificate(interDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: interDER})
+
+	// Leaf, signed by the intermediate.
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTpl := &x509.Certificate{
+		SerialNumber: big.NewInt(11),
+		Subject:      pkix.Name{CommonName: "leaf"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTpl, interCert, &leafKey.PublicKey, interKey)
+	if err != nil {
+		t.Fatalf("create leaf: %v", err)
+	}
+	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	leafKeyPEM := keyToPEM(t, leafKey)
+
+	// Bundle = leaf + intermediate; CA = root only.
+	bundle := append(append([]byte{}, leafPEM...), interPEM...)
+	if _, err := LoadPEM(rootPEM, bundle, leafKeyPEM, testServer, ""); err != nil {
+		t.Fatalf("LoadPEM with intermediate chain: %v", err)
+	}
+
+	// Control: leaf alone does not chain to the root.
+	if _, err := LoadPEM(rootPEM, leafPEM, leafKeyPEM, testServer, ""); err == nil {
+		t.Fatal("expected leaf without its intermediate to fail against the root")
+	}
+}
+
+// TestProfileStringRedactsKey ensures no PEM material (key or certs) leaks
+// through the common fmt verbs, while useful identity still shows.
+func TestProfileStringRedactsKey(t *testing.T) {
+	_, dir := testCA(t, "alice")
+	caPEM, certPEM, keyPEM := clientPEMs(t, dir, "alice")
+	p, err := LoadPEM(caPEM, certPEM, keyPEM, testServer, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, s := range []string{
+		p.String(),
+		fmt.Sprintf("%v", p),
+		fmt.Sprintf("%+v", p),
+		fmt.Sprintf("%#v", p),
+	} {
+		if strings.Contains(s, "-----BEGIN") {
+			t.Errorf("rendered profile leaked PEM material: %q", s)
+		}
+	}
+	if !strings.Contains(p.String(), "alice") {
+		t.Errorf("String() should include the CN, got %q", p.String())
+	}
 }

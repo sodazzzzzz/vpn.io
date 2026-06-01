@@ -35,6 +35,20 @@ type Profile struct {
 	NotAfter   time.Time // client certificate expiry
 }
 
+// String renders a Profile without its credential bytes, so the private key
+// can't leak through fmt's %v/%s/%+v or a logger that stringifies values.
+// Use the fields directly when you actually need the PEM.
+func (p *Profile) String() string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("Profile{Server:%s ServerName:%s CN:%s NotAfter:%s}",
+		p.Server, p.ServerName, p.CommonName, p.NotAfter.Format(time.RFC3339))
+}
+
+// GoString does the same for the %#v verb.
+func (p *Profile) GoString() string { return p.String() }
+
 // Files names the on-disk inputs for Load. Server is the literal address
 // the user supplies (host:port), not a path; ServerName is optional.
 type Files struct {
@@ -90,6 +104,8 @@ func LoadPEM(caPEM, certPEM, keyPEM []byte, server, serverName string) (*Profile
 	}
 
 	// X509KeyPair parses both halves and confirms the key matches the cert.
+	// A bundled certPEM (leaf + intermediates) lands in tlsCert.Certificate:
+	// [0] is the leaf, the rest are intermediates.
 	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("client certificate and key do not match (or are malformed): %w", err)
@@ -97,6 +113,18 @@ func LoadPEM(caPEM, certPEM, keyPEM []byte, server, serverName string) (*Profile
 	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
 	if err != nil {
 		return nil, fmt.Errorf("parse client certificate: %w", err)
+	}
+	// Feed any intermediates to Verify so a leaf+intermediate bundle chains
+	// to the CA — matching what the TLS dialer would accept. Without this a
+	// chain the server happily verifies would fail locally with "unknown
+	// authority".
+	intermediates := x509.NewCertPool()
+	for _, der := range tlsCert.Certificate[1:] {
+		ic, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, fmt.Errorf("parse intermediate certificate: %w", err)
+		}
+		intermediates.AddCert(ic)
 	}
 
 	now := time.Now()
@@ -110,9 +138,10 @@ func LoadPEM(caPEM, certPEM, keyPEM []byte, server, serverName string) (*Profile
 	// Confirm the cert chains to the supplied CA and is usable for client
 	// authentication — the same trust the server checks at handshake time.
 	if _, err := leaf.Verify(x509.VerifyOptions{
-		Roots:       caPool,
-		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		CurrentTime: now,
+		Roots:         caPool,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		CurrentTime:   now,
 	}); err != nil {
 		return nil, fmt.Errorf("client certificate is not signed by the given CA (or lacks client-auth usage): %w", err)
 	}
