@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.vpnio.helper</string>
+
+	<!-- Runs as root (LaunchDaemon): the helper creates the TUN device and
+	     edits routes/firewall/DNS. To let a desktop user drive it, append
+	     -allow-gid <gid> here and widen the socket mode (see README). -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/vpn-helper</string>
+		<string>-socket</string>
+		<string>/var/run/vpn-io-helper.sock</string>
+		<string>-socket-mode</string>
+		<string>0660</string>
+		<string>-log-level</string>
+		<string>info</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Restart on crash, but not after a clean exit (a manual bootout). -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/var/log/vpn-io-helper.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/vpn-io-helper.log</string>
+</dict>
+</plist>

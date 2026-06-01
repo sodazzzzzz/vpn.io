@@ -1,0 +1,31 @@
+[Unit]
+Description=vpn.io privileged helper daemon
+Documentation=https://github.com/sodazzzzzz/vpn.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The helper must run as root: it creates the TUN device and edits routes,
+# the nftables firewall and DNS. Do not add User=/drop privileges here.
+ExecStart=/usr/local/bin/vpn-helper -socket /run/vpn-io/helper.sock -socket-mode 0660 -log-level info
+#
+# To let a desktop user drive the daemon, grant their group and make the
+# socket group-accessible by appending, e.g.:
+#     -allow-gid 1000
+# (see packaging/README.md). The default admits only root.
+
+# Private runtime directory for the control socket: systemd creates
+# /run/vpn-io on start and removes it on stop.
+RuntimeDirectory=vpn-io
+RuntimeDirectoryMode=0755
+
+Restart=on-failure
+RestartSec=2
+
+# The helper tears the tunnel down on SIGTERM; give it room to finish.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
