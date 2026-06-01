@@ -58,6 +58,15 @@ type Config struct {
 	CertFile   string // client.crt
 	KeyFile    string // client.key
 
+	// In-memory credentials. When all three are non-empty they are used
+	// instead of the *File paths above (the file fields are then ignored).
+	// This lets a privileged daemon receive credentials over IPC and build
+	// the TLS config without opening any caller-supplied path as root.
+	// Supplying some but not all of the three is a configuration error.
+	CACertPEM []byte
+	CertPEM   []byte
+	KeyPEM    []byte
+
 	// ServerName is the SNI / hostname-verification target. Defaults to
 	// the host part of Server if empty.
 	ServerName string
@@ -74,7 +83,26 @@ type Config struct {
 	// control frame (AssignIP or Error) after the TLS handshake.
 	// Default: 10s.
 	HandshakeTimeout time.Duration
+
+	// OnState, if non-nil, is invoked on connection-state transitions so an
+	// embedding daemon can report status. It is called only from Run's
+	// reconnect-loop goroutine (never concurrently) and must not block.
+	OnState func(State)
 }
+
+// State is a coarse connection state reported through Config.OnState.
+type State string
+
+const (
+	// StateConnecting is emitted at the start of each connect attempt.
+	StateConnecting State = "connecting"
+	// StateConnected is emitted once the server has assigned an IP and the
+	// TUN device is configured (the tunnel is up).
+	StateConnected State = "connected"
+	// StateReconnecting is emitted while waiting out the backoff before a
+	// retry after a dropped or failed attempt.
+	StateReconnecting State = "reconnecting"
+)
 
 // Client is the long-lived VPN client. Construct with New, drive with Run.
 type Client struct {
@@ -103,7 +131,13 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 	if cfg.Server == "" {
 		return nil, fmt.Errorf("client: empty Server")
 	}
-	if cfg.CACertFile == "" || cfg.CertFile == "" || cfg.KeyFile == "" {
+	// Credentials come either fully in-memory (PEM) or fully from files.
+	nPEM := btoi(len(cfg.CACertPEM) > 0) + btoi(len(cfg.CertPEM) > 0) + btoi(len(cfg.KeyPEM) > 0)
+	inlineCreds := nPEM > 0
+	if inlineCreds && nPEM != 3 {
+		return nil, fmt.Errorf("client: CACertPEM/CertPEM/KeyPEM must all be set together")
+	}
+	if !inlineCreds && (cfg.CACertFile == "" || cfg.CertFile == "" || cfg.KeyFile == "") {
 		return nil, fmt.Errorf("client: CA/cert/key files all required")
 	}
 	if cfg.ReconnectMin <= 0 {
@@ -126,12 +160,42 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 		cfg.ServerName = host
 	}
 
-	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, cfg.ServerName)
+	var (
+		tlsCfg *tls.Config
+		err    error
+	)
+	if inlineCreds {
+		tlsCfg, err = tlsConfigFromPEM(cfg.CACertPEM, cfg.CertPEM, cfg.KeyPEM, cfg.ServerName)
+	} else {
+		tlsCfg, err = loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, cfg.ServerName)
+	}
 	if err != nil {
 		return nil, err
 	}
 
+	// The raw credential PEM is no longer needed once tlsCfg holds the parsed
+	// key and certs. Drop the references so the private key in particular
+	// doesn't linger in the Client (and its memory/core dumps) for the whole
+	// session. Best-effort: the GC reclaims the backing arrays once no other
+	// reference remains; this just stops Client from being one such reference.
+	cfg.CACertPEM, cfg.CertPEM, cfg.KeyPEM = nil, nil, nil
+
 	return &Client{cfg: cfg, dev: dev, log: log, tlsConfig: tlsCfg}, nil
+}
+
+// btoi returns 1 for true and 0 for false.
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// emitState forwards a state transition to Config.OnState if set.
+func (c *Client) emitState(s State) {
+	if c.cfg.OnState != nil {
+		c.cfg.OnState(s)
+	}
 }
 
 // Run blocks until ctx is cancelled (returns nil) or a non-retryable
@@ -294,6 +358,9 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 	if err := c.ensureDNS(assign); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
 	}
+
+	// The tunnel is now fully up (IP assigned, TUN/routes/DNS configured).
+	c.emitState(StateConnected)
 
 	// Hand the live conn to runSession; it owns the connection from here
 	// on (and will Close it on its own way out).
