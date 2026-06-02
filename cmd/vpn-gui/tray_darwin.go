@@ -16,11 +16,13 @@ extern void trayMainThreadCallback(void *ctx);
 // is open.
 extern id owner;
 
-// dispatchToMain queues trayMainThreadCallback onto the Cocoa main queue, which
-// the Wails main loop ([NSApp run]) drains — so the work runs on the main
-// thread, as NSStatusBar requires.
-static void dispatchToMain(void) {
-    dispatch_async_f(dispatch_get_main_queue(), 0, trayMainThreadCallback);
+// dispatchToMain runs trayMainThreadCallback on the Cocoa main queue, which the
+// Wails main loop ([NSApp run]) drains — so the work runs on the main thread, as
+// NSStatusBar requires. The Go callback travels as a cgo.Handle in the context
+// pointer (one per call, freed in the callback), so there is no shared state to
+// race on.
+static void dispatchToMain(uintptr_t handle) {
+    dispatch_async_f(dispatch_get_main_queue(), (void *)handle, trayMainThreadCallback);
 }
 
 static void setTrayHighlightedNow(bool on) {
@@ -47,32 +49,30 @@ static void dispatchHighlightToMain(bool on) {
 */
 import "C"
 
-import "unsafe"
-
-// pendingMainFn holds the function to run on the main thread. It is set once at
-// startup and consumed by the dispatched callback, so a plain global is enough.
-var pendingMainFn func()
+import (
+	"runtime/cgo"
+	"unsafe"
+)
 
 //export trayMainThreadCallback
-func trayMainThreadCallback(_ unsafe.Pointer) {
-	if pendingMainFn != nil {
-		fn := pendingMainFn
-		pendingMainFn = nil
-		fn()
-	}
+func trayMainThreadCallback(ctx unsafe.Pointer) {
+	h := cgo.Handle(uintptr(ctx))
+	fn := h.Value().(func())
+	h.Delete()
+	fn()
 }
 
 // runOnMainThread schedules fn to run on the Cocoa main thread. The menu-bar
 // status item must be created there; Wails runs OnStartup on a goroutine, so we
-// bounce through the main dispatch queue.
+// bounce through the main dispatch queue. fn travels as a cgo.Handle, so
+// concurrent or repeated calls don't clobber one another.
 //
 // Note: the systray's start takes over the NSApplication delegate (to create
 // the status item), which is what wires up its click handling — so we leave it
 // in place. The trade-off is that clicking the app's *dock* icon won't reopen
 // the window; the title-bar buttons and the tray icon manage the window.
 func runOnMainThread(fn func()) {
-	pendingMainFn = fn
-	C.dispatchToMain()
+	C.dispatchToMain(C.uintptr_t(cgo.NewHandle(fn)))
 }
 
 // setTrayHighlighted gives the menu-bar icon the selected (highlighted) look

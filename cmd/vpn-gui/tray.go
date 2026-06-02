@@ -92,8 +92,10 @@ func (t *tray) onReady() {
 }
 
 func (t *tray) refreshLoop() {
+	// Runs for the whole life of the app — the tray mirrors the daemon until the
+	// process exits, so the ticker is intentionally never stopped (a defer Stop
+	// here would be dead code: the range below never returns).
 	tick := time.NewTicker(trayPollInterval)
-	defer tick.Stop()
 	t.refresh()
 	for range tick.C {
 		t.refresh()
