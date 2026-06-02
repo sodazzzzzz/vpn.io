@@ -1,0 +1,43 @@
+[Unit]
+Description=vpn.io VPN server
+Documentation=https://github.com/sodazzzzzz/vpn.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# All deployment-specific values live in /etc/vpn-server/server.env (see
+# server.env.example). The server runs as root: it creates the TUN device,
+# edits routes and terminates the mTLS listener.
+EnvironmentFile=/etc/vpn-server/server.env
+
+# Bring up IPv4 forwarding + NAT for the tunnel subnet before the server starts.
+# setup-nat.sh is idempotent, so re-running it on every (re)start — including
+# after a reboot — keeps the rules present without iptables-persistent.
+ExecStartPre=/usr/local/lib/vpn-server/setup-nat.sh ${VPN_SUBNET} ${VPN_WAN}
+
+ExecStart=/usr/local/bin/vpn-server \
+    -listen ${VPN_LISTEN} \
+    -ca ${VPN_CA} -cert ${VPN_CERT} -key ${VPN_KEY} \
+    -subnet ${VPN_SUBNET} -gateway ${VPN_GATEWAY} \
+    -push-routes ${VPN_PUSH_ROUTES} -push-dns ${VPN_PUSH_DNS} \
+    -log-level info
+
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Defence-in-depth: none of these block the TUN device, netlink/route changes,
+# the iptables NAT in ExecStartPre, the sysctl ip_forward write, or the TLS
+# listener — they just shrink the blast radius of a root daemon facing the net.
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+
+[Install]
+WantedBy=multi-user.target
