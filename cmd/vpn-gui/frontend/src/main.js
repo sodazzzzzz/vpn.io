@@ -332,6 +332,12 @@ const THEME_KEY = 'vpnio.theme';
 
 function setTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
+  // Keep the toggle's accessible name pointing at what the next press does, so a
+  // screen reader announces the direction (review #56).
+  const toggle = el('theme-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-label', t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+  }
 }
 
 function setupTheme() {
