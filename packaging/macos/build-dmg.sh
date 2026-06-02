@@ -49,11 +49,11 @@ codesign --verify --deep --strict "$APP"
 
 echo "==> Creating .dmg"
 STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT   # clean the staging dir even if a step below fails
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
 
 echo "==> Done"
 ls -lh "$DMG"
