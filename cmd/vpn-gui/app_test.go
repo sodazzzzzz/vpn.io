@@ -50,3 +50,28 @@ func TestNewAppNoProfile(t *testing.T) {
 		t.Fatal("expected HasProfile=false with no saved profile")
 	}
 }
+
+// TestConnectInvalidFormKeepsDraft verifies that a Connect whose form fails
+// validation (here a portless server address) does not clobber the
+// previously-loaded working profile in the draft.
+func TestConnectInvalidFormKeepsDraft(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.json")
+	t.Setenv("VPN_IO_PROFILE", path)
+
+	st := &profilestore.Store{Path: path}
+	if err := st.Save(profilestore.Profile{
+		Server:    "vpn.example.com:8443",
+		CACertPEM: []byte("ca"), CertPEM: []byte("cert"), KeyPEM: []byte("key"),
+		CAName: "ca.pem", CertName: "client.crt", KeyName: "client.key",
+	}); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+
+	a := NewApp()
+	if _, err := a.Connect(ConnectForm{Server: "vpn.example.com"}); err == nil {
+		t.Fatal("expected Connect to fail on a portless address")
+	}
+	if got := a.Profile().Server; got != "vpn.example.com:8443" {
+		t.Errorf("draft server clobbered after a failed Connect: got %q, want vpn.example.com:8443", got)
+	}
+}

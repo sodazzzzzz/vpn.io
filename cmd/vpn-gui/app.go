@@ -234,7 +234,6 @@ func (a *App) Connect(form ConnectForm) (control.Connected, error) {
 	}
 
 	a.mu.Lock()
-	a.form = form
 	ca, cert, key := a.caPEM, a.certPEM, a.keyPEM
 	caN, certN, keyN := a.caName, a.certName, a.keyName
 	a.mu.Unlock()
@@ -242,6 +241,13 @@ func (a *App) Connect(form ConnectForm) (control.Connected, error) {
 	if _, err := profile.LoadPEM(ca, cert, key, form.Server, form.ServerName); err != nil {
 		return control.Connected{}, fmt.Errorf("invalid credentials: %w", err)
 	}
+
+	// Commit the form to the draft only after it validates, so a bad address
+	// doesn't clobber a previously-working profile.
+	a.mu.Lock()
+	a.form = form
+	a.mu.Unlock()
+
 	a.save(form, ca, cert, key, caN, certN, keyN)
 
 	// Connect with the same snapshot we validated and saved, so a concurrent
