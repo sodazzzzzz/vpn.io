@@ -47,11 +47,27 @@ jobs:
         working-directory: cmd/vpn-gui
         run: wails build -tags webkit2_40
 
-      - name: show output
-        run: ls -la cmd/vpn-gui/build/bin
+      - name: build helper daemon
+        run: go build -trimpath -o dist/vpn-helper ./cmd/vpn-helper
+
+      - name: install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: package .deb
+        env:
+          VERSION: 0.1.0
+        run: |
+          ls -la cmd/vpn-gui/build/bin dist
+          nfpm package --config packaging/deb/nfpm.yaml --packager deb --target dist/
+
+      - name: show package
+        run: |
+          ls -la dist/*.deb
+          dpkg-deb --contents dist/*.deb
+          dpkg-deb --info dist/*.deb
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vpn-gui-linux-amd64
-          path: cmd/vpn-gui/build/bin/*
+          name: vpn-io-linux-amd64-deb
+          path: dist/*.deb
           if-no-files-found: error

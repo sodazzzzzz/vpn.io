@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=vpn.io
+Comment=Self-hosted VPN client
+Exec=env VPN_IO_HELPER_SOCKET=/run/vpn-io/helper.sock /usr/bin/vpn-io
+Icon=vpn-io
+Terminal=false
+Categories=Network;
+Keywords=VPN;tunnel;privacy;
+StartupNotify=true

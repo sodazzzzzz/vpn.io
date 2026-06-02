@@ -1,0 +1,30 @@
+[Unit]
+Description=vpn.io privileged helper daemon
+Documentation=https://github.com/sodazzzzzz/vpn.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root (uid 0): the helper creates the TUN device and edits routes, the
+# nftables firewall and DNS — do not drop the user. Group=vpn-io makes the
+# control socket in /run/vpn-io group-owned by vpn-io; members of that group
+# (admitted by peer-credential via -allow-gid ${VPNIO_GID}, written to
+# /etc/default/vpn-helper by the package) may drive the daemon. Root uid keeps
+# full privileges regardless of the group.
+Group=vpn-io
+EnvironmentFile=-/etc/default/vpn-helper
+ExecStart=/usr/bin/vpn-helper -socket /run/vpn-io/helper.sock -socket-mode 0660 -allow-gid ${VPNIO_GID} -log-level info
+
+# systemd creates /run/vpn-io (root:vpn-io, 0750) on start and removes it on
+# stop — group-traversable so a vpn-io member can reach the socket.
+RuntimeDirectory=vpn-io
+RuntimeDirectoryMode=0750
+
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
