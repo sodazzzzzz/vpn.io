@@ -8,6 +8,11 @@ import (
 	"strconv"
 )
 
+// defaultTUNName is used when the caller leaves the interface name empty.
+// macOS rejects an empty name (it must match utun[0-9]*); "utun" tells the
+// kernel to pick the next free utunN.
+const defaultTUNName = "utun"
+
 // configureDevice configures a utun interface on macOS via ifconfig.
 //
 // utun is strictly point-to-point: ifconfig requires both the local IP and

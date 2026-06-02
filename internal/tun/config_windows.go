@@ -8,6 +8,10 @@ import (
 	"strconv"
 )
 
+// defaultTUNName is used when the caller leaves the interface name empty.
+// Wintun needs a non-empty adapter name.
+const defaultTUNName = "vpn.io"
+
 // configureDevice assigns ip/netmask to the wintun adapter via netsh and
 // sets its interface MTU. Requires Administrator.
 //
