@@ -8,41 +8,107 @@
 <body>
   <div class="tray" data-state="disconnected" id="tray">
 
-    <!-- title bar: profile chip (left) + drag region. Single profile today;
-         the chevron is where a switcher attaches later, so the chip is inert. -->
-    <div class="titlebar">
-      <button type="button" class="profile" id="profile" aria-haspopup="menu" aria-expanded="false" disabled>
-        <span class="profile__dot"></span>
-        <span class="profile__name" id="profile-name">vpn.io</span>
-        <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <div class="spacer"></div>
-    </div>
-
-    <!-- hero indicator + labels -->
-    <div class="stage">
-      <div class="orb">
-        <svg aria-hidden="true" focusable="false" class="orb__spin" viewBox="0 0 124 124" fill="none"><path d="M62 4a58 58 0 0 1 41 17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-        <!-- one glyph shows per state (CSS-toggled by data-state) -->
-        <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-plain" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-        <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-check" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.7 11.8 11 14l4.3-4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-excl" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 8v4.2M12 15.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        <svg aria-hidden="true" focusable="false" class="orb__glyph g-retry" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 1 1-2.6-6.3M21 4v4h-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <!-- ===================== MAIN SCREEN ===================== -->
+    <div id="view-main">
+      <div class="titlebar">
+        <button type="button" class="profile" id="profile" aria-haspopup="menu" aria-expanded="false">
+          <span class="profile__dot"></span>
+          <span class="profile__name" id="profile-name">vpn.io</span>
+          <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="spacer"></div>
       </div>
-      <div class="state-label" id="state-label" role="status" aria-live="polite">Not connected</div>
-      <div class="state-sub" id="state-sub"></div>
-      <div class="timer is-hidden" id="timer">00:00:00</div>
+
+      <div class="stage">
+        <div class="orb">
+          <svg aria-hidden="true" focusable="false" class="orb__spin" viewBox="0 0 124 124" fill="none"><path d="M62 4a58 58 0 0 1 41 17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+          <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-plain" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-check" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.7 11.8 11 14l4.3-4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-excl" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 8v4.2M12 15.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <svg aria-hidden="true" focusable="false" class="orb__glyph g-retry" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 1 1-2.6-6.3M21 4v4h-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="state-label" id="state-label" role="status" aria-live="polite">Not connected</div>
+        <div class="state-sub" id="state-sub"></div>
+        <div class="timer is-hidden" id="timer">00:00:00</div>
+      </div>
+
+      <div class="notice is-hidden" id="notice">
+        <svg aria-hidden="true" focusable="false" class="notice__icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v6M12 16v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <div class="notice__text"><b id="notice-title">Connection failed</b><span id="notice-detail"></span></div>
+      </div>
+
+      <div class="action">
+        <button type="button" class="btn btn--primary" id="action-btn">Connect</button>
+      </div>
     </div>
 
-    <!-- error surface, shown only in the failed state -->
-    <div class="notice is-hidden" id="notice">
-      <svg aria-hidden="true" focusable="false" class="notice__icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v6M12 16v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-      <div class="notice__text"><b id="notice-title">Connection failed</b><span id="notice-detail"></span></div>
-    </div>
+    <!-- ===================== IMPORT SHEET ===================== -->
+    <div id="view-import" class="sheet is-hidden">
+      <div class="titlebar">
+        <button type="button" class="iconbtn" id="imp-back" title="Back" aria-label="Back"><svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14.5 5 8 12l6.5 7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <h1 class="sheet__title">Add profile</h1>
+        <div class="spacer"></div>
+      </div>
 
-    <!-- primary action — label, style and handler are set per state in main.js -->
-    <div class="action">
-      <button type="button" class="btn btn--primary" id="action-btn">Connect</button>
+      <div class="form">
+        <div class="field">
+          <label class="field__label" for="imp-server">Server address</label>
+          <input id="imp-server" class="input" placeholder="vpn.example.com:8443" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label class="field__label" for="imp-sni">TLS server name <span class="opt">— optional</span></label>
+          <input id="imp-sni" class="input" placeholder="defaults to server host" autocomplete="off" spellcheck="false">
+        </div>
+
+        <div class="group-label">Credentials</div>
+
+        <button type="button" class="cred" id="cred-ca">
+          <svg aria-hidden="true" focusable="false" class="cred__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path class="cred__check" d="m9.6 14.4 1.6 1.6 3.2-3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="cred__body"><div class="cred__role">CA certificate</div><div class="cred__hint" id="cred-ca-hint">verifies the server — required</div></div>
+          <span class="cred__action" id="cred-ca-action">Choose…</span>
+        </button>
+
+        <button type="button" class="cred" id="cred-cert">
+          <svg aria-hidden="true" focusable="false" class="cred__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path class="cred__check" d="m9.6 14.4 1.6 1.6 3.2-3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="cred__body"><div class="cred__role">Client certificate</div><div class="cred__hint" id="cred-cert-hint">identifies you — required</div></div>
+          <span class="cred__action" id="cred-cert-action">Choose…</span>
+        </button>
+
+        <button type="button" class="cred" id="cred-key">
+          <svg aria-hidden="true" focusable="false" class="cred__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l4 4v14H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path class="cred__check" d="m9.6 14.4 1.6 1.6 3.2-3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="cred__body"><div class="cred__role">Client key</div><div class="cred__hint" id="cred-key-hint">PEM private key — required</div></div>
+          <span class="cred__action" id="cred-key-action">Choose…</span>
+        </button>
+
+        <details class="disclosure">
+          <summary class="disclosure__head" style="list-style:none">
+            <svg aria-hidden="true" focusable="false" class="disclosure__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Advanced
+          </summary>
+          <div class="disclosure__body">
+            <div class="row2">
+              <div class="field" style="margin:0">
+                <label class="field__label" for="imp-mtu">MTU</label>
+                <input id="imp-mtu" class="input" placeholder="1380" inputmode="numeric" autocomplete="off">
+              </div>
+              <div class="field" style="margin:0">
+                <label class="field__label" for="imp-tun">TUN name</label>
+                <input id="imp-tun" class="input" placeholder="auto" autocomplete="off" spellcheck="false">
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <div class="notice is-hidden" id="imp-error" style="margin:var(--s-5) 0 0">
+          <svg aria-hidden="true" focusable="false" class="notice__icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v6M12 16v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <div class="notice__text"><b>Couldn't use this profile</b><span id="imp-error-detail"></span></div>
+        </div>
+      </div>
+
+      <div class="action-row">
+        <button type="button" class="btn btn--quiet btn--sm" id="imp-cancel">Cancel</button>
+        <button type="button" class="btn btn--primary btn--sm" id="imp-save" disabled>Save &amp; connect</button>
+      </div>
     </div>
 
   </div>
