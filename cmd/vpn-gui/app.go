@@ -98,8 +98,9 @@ const maxCredentialFileBytes = 64 << 10
 // step). All draft state is guarded by mu, since Wails may dispatch bound
 // methods concurrently.
 type App struct {
-	ctx context.Context
-	cl  *control.Client
+	ctx  context.Context
+	cl   *control.Client
+	tray *tray
 
 	mu       sync.Mutex
 	caPEM    []byte
@@ -117,8 +118,22 @@ func NewApp() *App {
 	return &App{cl: control.New(helperSocket())}
 }
 
-// startup captures the Wails runtime context (needed for the file dialog).
-func (a *App) startup(ctx context.Context) { a.ctx = ctx }
+// startup captures the Wails runtime context (needed for the file dialog and
+// window control) and brings up the menu-bar tray.
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+	a.tray = newTray(a)
+	a.tray.start()
+}
+
+// onBeforeClose keeps the app alive in the menu bar when the window is closed:
+// it hides the window and cancels the close. Wired to options.OnBeforeClose.
+func (a *App) onBeforeClose(context.Context) bool {
+	if a.tray != nil {
+		return a.tray.onBeforeClose()
+	}
+	return false
+}
 
 // Status reports the daemon's current connection state. The front-end polls
 // this; a transport error (typically "daemon not running") comes back as-is.

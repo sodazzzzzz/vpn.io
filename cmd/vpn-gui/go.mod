@@ -9,6 +9,7 @@ module github.com/govpn/cmd/vpn-gui
 go 1.26
 
 require (
+	github.com/energye/systray v1.0.3
 	github.com/govpn v0.0.0
 	github.com/wailsapp/wails/v2 v2.12.0
 )
