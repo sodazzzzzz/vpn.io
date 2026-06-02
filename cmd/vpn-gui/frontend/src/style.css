@@ -1,0 +1,289 @@
+/* ============================================================================
+   vpn.io — desktop tray window  ·  concept: "Quiet Signal"
+   Design system ported from docs/ui/mockup.html (the source of truth). Only the
+   product styles live here; the mockup's gallery scaffolding is dropped, and a
+   few app-only rules (full-window tray, theme, glyph toggling) are added at the
+   end. Keep this in sync with docs/DESIGN.md.
+   ============================================================================ */
+
+/* ---- TOKENS · light (default) ------------------------------------------- */
+:root {
+  --c-window:        #f5f5f7;
+  --c-surface:       #ffffff;
+  --c-fill:          rgba(118,118,128,0.08);
+  --c-fill-strong:   rgba(118,118,128,0.14);
+
+  --c-text:          #1d1d1f;
+  --c-text-2:        #636368;
+  --c-text-3:        #86868b;
+  --c-on-accent:     #ffffff;
+
+  --c-separator:     rgba(60,60,67,0.12);
+  --c-border:        rgba(0,0,0,0.06);
+
+  --c-accent:        #007aff;
+  --c-accent-fill:   #0067d6;
+  --c-accent-tint:   rgba(0,122,255,0.10);
+  --c-link:          #0067d6;
+  --c-good:          #2fa84f;
+  --c-good-tint:     rgba(47,168,79,0.12);
+  --c-warn:          #e08600;
+  --c-warn-tint:     rgba(224,134,0,0.12);
+  --c-bad:           #e0352b;
+  --c-bad-tint:      rgba(224,53,43,0.10);
+  --c-danger-text:   #c9271d;
+  --c-idle:          #8e8e93;
+  --c-idle-tint:     rgba(142,142,147,0.12);
+
+  --shadow-popover:  0 0 0 0.5px var(--c-border), 0 10px 30px rgba(0,0,0,0.16), 0 1px 2px rgba(0,0,0,0.08);
+  --shadow-control:  0 0.5px 1px rgba(0,0,0,0.10);
+
+  --font: -apple-system, "SF Pro Text", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "Menlo", "Consolas", monospace;
+  --fs-caption2: 11px;  --fs-caption: 12px;  --fs-foot: 13px;
+  --fs-body:     14px;  --fs-head:    15px;  --fs-title: 17px;
+  --fs-state:    21px;  --fs-timer:   26px;
+  --fw-reg: 400; --fw-med: 500; --fw-semi: 600; --fw-bold: 700;
+
+  --r-xs: 6px; --r-sm: 8px; --r-md: 10px; --r-lg: 12px; --r-pill: 980px;
+
+  --s-1: 2px; --s-2: 4px; --s-3: 6px; --s-4: 8px; --s-5: 12px;
+  --s-6: 16px; --s-7: 20px; --s-8: 24px; --s-9: 32px; --s-10: 40px;
+
+  --h-action: 44px;
+  --h-control: 36px;
+  --orb: 124px;
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-1: 120ms; --dur-2: 200ms; --dur-3: 320ms;
+}
+
+/* ---- TOKENS · dark ------------------------------------------------------- */
+:root[data-theme="dark"] {
+  --c-window:        #1c1c1e;
+  --c-surface:       #2c2c2e;
+  --c-fill:          rgba(118,118,128,0.20);
+  --c-fill-strong:   rgba(118,118,128,0.32);
+
+  --c-text:          #f5f5f7;
+  --c-text-2:        #a1a1a6;
+  --c-text-3:        #8e8e93;
+  --c-on-accent:     #ffffff;
+
+  --c-separator:     rgba(84,84,88,0.55);
+  --c-border:        rgba(255,255,255,0.10);
+
+  --c-accent:        #0a84ff;  --c-accent-tint: rgba(10,132,255,0.18);
+  --c-accent-fill:   #0a6fdc;
+  --c-link:          #4aa3ff;
+  --c-good:          #32d158;  --c-good-tint:   rgba(50,209,88,0.18);
+  --c-warn:          #ff9f0a;  --c-warn-tint:   rgba(255,159,10,0.18);
+  --c-bad:           #ff453a;  --c-bad-tint:    rgba(255,69,58,0.18);
+  --c-danger-text:   #ff6961;
+  --c-idle:          #8e8e93;  --c-idle-tint:   rgba(142,142,147,0.18);
+
+  --shadow-popover:  0 0 0 0.5px var(--c-border), 0 12px 36px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.35);
+  --shadow-control:  0 0.5px 1px rgba(0,0,0,0.40);
+}
+
+/* per-state color resolution — set --st / --st-tint once on the tray */
+.tray[data-state="disconnected"] { --st: var(--c-idle);   --st-tint: var(--c-idle-tint); }
+.tray[data-state="connecting"]   { --st: var(--c-accent); --st-tint: var(--c-accent-tint); }
+.tray[data-state="connected"]    { --st: var(--c-good);   --st-tint: var(--c-good-tint); }
+.tray[data-state="reconnecting"] { --st: var(--c-warn);   --st-tint: var(--c-warn-tint); }
+.tray[data-state="failed"]       { --st: var(--c-bad);    --st-tint: var(--c-bad-tint); }
+
+/* ===========================================================================
+   the tray window
+   =========================================================================== */
+*, *::before, *::after { box-sizing: border-box; }
+
+.tray {
+  width: 360px;
+  background: var(--c-window);
+  color: var(--c-text);
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  user-select: none;
+}
+
+/* ---- title bar (also the window drag region in Wails) ------------------- */
+.titlebar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 0 var(--s-3) 0 var(--s-5);
+  -webkit-app-region: drag;
+}
+.titlebar > .iconbtn, .titlebar > .profile { -webkit-app-region: no-drag; }
+
+.profile {
+  display: flex; align-items: center; gap: var(--s-3);
+  height: 30px; padding: 0 var(--s-3) 0 var(--s-2);
+  border: none; background: transparent; cursor: pointer;
+  border-radius: var(--r-sm); color: var(--c-text);
+  font: inherit; max-width: 240px;
+  transition: background var(--dur-1) var(--ease);
+}
+.profile:hover { background: var(--c-fill); }
+.profile[disabled] { cursor: default; }
+.profile[disabled]:hover { background: transparent; }
+.profile__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--st); flex: none;
+  box-shadow: 0 0 0 3px var(--st-tint);
+}
+.profile__name {
+  font-size: var(--fs-foot); font-weight: var(--fw-semi);
+  letter-spacing: -0.01em; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.profile__chev { color: var(--c-text-3); flex: none; margin-left: -2px; }
+
+.spacer { flex: 1; }
+
+.iconbtn {
+  width: 30px; height: 30px; flex: none;
+  display: grid; place-items: center;
+  border: none; background: transparent; cursor: pointer;
+  border-radius: var(--r-sm); color: var(--c-text-2);
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.iconbtn:hover { background: var(--c-fill); color: var(--c-text); }
+.iconbtn:active { background: var(--c-fill-strong); }
+
+/* ---- stage: the hero indicator + labels --------------------------------- */
+.stage {
+  display: flex; flex-direction: column; align-items: center;
+  padding: var(--s-2) var(--s-7) var(--s-6);
+  text-align: center;
+}
+
+.orb {
+  position: relative;
+  width: var(--orb); height: var(--orb);
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--st-tint);
+  margin-bottom: var(--s-6);
+  transition: background var(--dur-3) var(--ease);
+}
+.orb::after {
+  content: ""; position: absolute; inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--st) 32%, transparent);
+}
+.orb__glyph { width: 50px; height: 50px; color: var(--st); position: relative; z-index: 1; }
+
+.orb__spin {
+  position: absolute; inset: -1px;
+  color: var(--st);
+  opacity: 0;
+  animation: orbspin 1.9s linear infinite;
+}
+.tray[data-state="connecting"] .orb__spin,
+.tray[data-state="reconnecting"] .orb__spin { opacity: 1; }
+@keyframes orbspin { to { transform: rotate(360deg); } }
+
+.state-label {
+  font-size: var(--fs-state); font-weight: var(--fw-semi);
+  letter-spacing: -0.022em; line-height: 1.15;
+  color: var(--c-text);
+}
+.state-sub {
+  margin-top: var(--s-3);
+  font-size: var(--fs-foot); color: var(--c-text-2);
+}
+.state-sub .server {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--c-text);
+}
+
+.timer {
+  margin-top: var(--s-5);
+  font-size: var(--fs-timer); font-weight: var(--fw-med);
+  letter-spacing: 0.01em; color: var(--c-text);
+  font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+}
+
+/* ---- error surface (failed) --------------------------------------------- */
+.notice {
+  margin: 0 var(--s-7) var(--s-6);
+  display: flex; gap: var(--s-4); align-items: flex-start;
+  padding: var(--s-5);
+  background: var(--c-bad-tint);
+  border-radius: var(--r-md);
+}
+.notice__icon { color: var(--c-bad); flex: none; margin-top: 1px; }
+.notice__text { font-size: var(--fs-foot); color: var(--c-text); line-height: 1.35; }
+.notice__text b { font-weight: var(--fw-semi); display: block; margin-bottom: 2px; }
+
+/* ---- primary action ----------------------------------------------------- */
+.action { padding: 0 var(--s-7) var(--s-7); }
+
+.btn {
+  width: 100%; height: var(--h-action);
+  border: none; border-radius: var(--r-md);
+  font-family: var(--font); font-size: var(--fs-head); font-weight: var(--fw-semi);
+  letter-spacing: -0.01em; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s-3);
+  transition: transform var(--dur-1) var(--ease), background var(--dur-1) var(--ease), opacity var(--dur-1);
+}
+.btn:active { transform: scale(0.985); }
+
+.btn:focus-visible, .iconbtn:focus-visible, .profile:focus-visible {
+  outline: 2px solid var(--c-accent); outline-offset: 2px;
+}
+
+.btn--primary { background: var(--c-accent-fill); color: var(--c-on-accent); box-shadow: var(--shadow-control); }
+.btn--primary:hover { background: color-mix(in srgb, var(--c-accent-fill) 92%, #000); }
+
+.btn--quiet { background: var(--c-fill); color: var(--c-text); }
+.btn--quiet:hover { background: var(--c-fill-strong); }
+.btn--quiet.btn--danger { color: var(--c-danger-text); }
+
+.btn[disabled] { opacity: 0.5; cursor: default; pointer-events: none; }
+
+.btn .mini-spin { width: 15px; height: 15px; animation: orbspin 1.6s linear infinite; opacity: 0.9; }
+
+/* ===========================================================================
+   reduced motion
+   =========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .orb__spin, .btn .mini-spin { animation: none; }
+  .orb__spin { opacity: 0.6; }
+  * { transition-duration: 1ms !important; }
+}
+
+/* ===========================================================================
+   app-only rules (not in the mockup gallery)
+   =========================================================================== */
+html, body {
+  margin: 0; padding: 0;
+  width: 360px;
+  background: var(--c-window);
+  overflow: hidden;
+}
+
+/* In a frameless window the OS window is the container, so the tray fills it
+   edge-to-edge: the rounded corners and floating shadow belong to the popover
+   chrome that arrives with the native tray item (a later step), not here. */
+.tray { width: 100%; border-radius: 0; box-shadow: none; }
+
+.is-hidden { display: none !important; }
+
+/* orb glyph variants — exactly one shows per state (the spinner overlays the
+   connecting/reconnecting ones). Color comes from --st via .orb__glyph. */
+.orb__glyph { display: none; }
+.tray[data-state="disconnected"] .g-shield-plain { display: block; }
+.tray[data-state="connecting"]   .g-shield-plain { display: block; opacity: 0.55; }
+.tray[data-state="connected"]    .g-shield-check { display: block; }
+.tray[data-state="failed"]       .g-shield-excl  { display: block; }
+.tray[data-state="reconnecting"] .g-retry        { display: block; opacity: 0.55; }
