@@ -20,7 +20,10 @@ if [ ! -e /etc/default/vpn-helper ]; then
         VPNIO_UID="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
         usermod -aG vpn-io "${SUDO_USER}" || true   # filesystem access to the socket
     fi
-    printf 'VPNIO_UID=%s\n' "${VPNIO_UID}" > /etc/default/vpn-helper
+    # Default to 0 (root, always allowed) rather than empty: an empty value
+    # would make systemd pass a bare `-allow-uid` and the daemon crash-loop.
+    # Root-only is the safe degraded state; the admin sets the real uid later.
+    printf 'VPNIO_UID=%s\n' "${VPNIO_UID:-0}" > /etc/default/vpn-helper
     chmod 0644 /etc/default/vpn-helper
 
     if [ -n "${VPNIO_UID}" ]; then
