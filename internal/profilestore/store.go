@@ -100,6 +100,12 @@ func (s *Store) Save(p Profile) error {
 		_ = tmp.Close()
 		return fmt.Errorf("write temp file: %w", err)
 	}
+	// Flush to disk before the rename so a crash right after can't leave a
+	// zero-length profile (Close alone doesn't guarantee an fsync).
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
