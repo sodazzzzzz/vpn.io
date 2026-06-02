@@ -1,0 +1,57 @@
+name: desktop-linux
+
+# Builds the Wails desktop GUI on Linux (it can't be built on the macOS dev
+# machine), so the Linux target is verified by CI. The .deb packaging is added
+# on top once the build is green.
+
+on:
+  push:
+    branches: [main, 'desktop-**']
+  pull_request:
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'packaging/**'
+      - '.github/workflows/desktop-linux.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-gui:
+    name: build GUI (linux/amd64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install GTK/WebKit deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: build GUI
+        working-directory: cmd/vpn-gui
+        run: wails build -tags webkit2_40
+
+      - name: show output
+        run: ls -la cmd/vpn-gui/build/bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-gui-linux-amd64
+          path: cmd/vpn-gui/build/bin/*
+          if-no-files-found: error
