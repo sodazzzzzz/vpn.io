@@ -1,0 +1,73 @@
+name: desktop-linux
+
+# Builds the Wails desktop GUI on Linux (it can't be built on the macOS dev
+# machine), so the Linux target is verified by CI. The .deb packaging is added
+# on top once the build is green.
+
+on:
+  push:
+    branches: [main, 'desktop-**']
+  pull_request:
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'packaging/**'
+      - '.github/workflows/desktop-linux.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-gui:
+    name: build GUI (linux/amd64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install GTK/WebKit deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: build GUI
+        working-directory: cmd/vpn-gui
+        run: wails build -tags webkit2_40
+
+      - name: build helper daemon
+        run: go build -trimpath -o dist/vpn-helper ./cmd/vpn-helper
+
+      - name: install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
+
+      - name: package .deb
+        env:
+          VERSION: 0.1.0
+        run: |
+          ls -la cmd/vpn-gui/build/bin dist
+          nfpm package --config packaging/deb/nfpm.yaml --packager deb --target dist/
+
+      - name: show package
+        run: |
+          ls -la dist/*.deb
+          dpkg-deb --contents dist/*.deb
+          dpkg-deb --info dist/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-io-linux-amd64-deb
+          path: dist/*.deb
+          if-no-files-found: error

@@ -1,0 +1,39 @@
+# nfpm config for the vpn.io Debian package: the desktop GUI + the privileged
+# helper daemon (systemd service). Built in CI on Linux.
+# https://nfpm.goreleaser.com/configuration/
+name: vpn-io
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: "vpn.io"
+homepage: https://github.com/sodazzzzzz/vpn.io
+description: |
+  Self-hosted VPN desktop client.
+  A tray GUI plus the privileged helper daemon that owns the tunnel
+  (installed as a systemd service).
+
+# Runtime libraries the Wails (GTK + WebKit) GUI links against.
+depends:
+  - libgtk-3-0
+  - libwebkit2gtk-4.0-37
+
+contents:
+  - src: cmd/vpn-gui/build/bin/vpn.io
+    dst: /usr/bin/vpn-io
+    file_info: { mode: 0755 }
+  - src: dist/vpn-helper
+    dst: /usr/bin/vpn-helper
+    file_info: { mode: 0755 }
+  - src: packaging/deb/vpn-helper.service
+    dst: /usr/lib/systemd/system/vpn-helper.service
+  - src: packaging/deb/vpn-io.desktop
+    dst: /usr/share/applications/vpn-io.desktop
+  - src: cmd/vpn-gui/build/appicon.png
+    dst: /usr/share/pixmaps/vpn-io.png
+
+scripts:
+  postinstall: packaging/deb/postinstall.sh
+  preremove: packaging/deb/preremove.sh
+  postremove: packaging/deb/postremove.sh
