@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vpn.io</title>
+</head>
+<body>
+  <div class="tray" data-state="disconnected" id="tray">
+
+    <!-- title bar: profile chip (left) + drag region. Single profile today;
+         the chevron is where a switcher attaches later, so the chip is inert. -->
+    <div class="titlebar">
+      <button type="button" class="profile" id="profile" aria-haspopup="menu" aria-expanded="false" disabled>
+        <span class="profile__dot"></span>
+        <span class="profile__name" id="profile-name">vpn.io</span>
+        <svg aria-hidden="true" focusable="false" class="profile__chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="spacer"></div>
+    </div>
+
+    <!-- hero indicator + labels -->
+    <div class="stage">
+      <div class="orb">
+        <svg aria-hidden="true" focusable="false" class="orb__spin" viewBox="0 0 124 124" fill="none"><path d="M62 4a58 58 0 0 1 41 17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        <!-- one glyph shows per state (CSS-toggled by data-state) -->
+        <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-plain" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-check" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.7 11.8 11 14l4.3-4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg aria-hidden="true" focusable="false" class="orb__glyph g-shield-excl" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 19 5.2v5.5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V5.2L12 2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 8v4.2M12 15.4v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg aria-hidden="true" focusable="false" class="orb__glyph g-retry" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 1 1-2.6-6.3M21 4v4h-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="state-label" id="state-label" role="status" aria-live="polite">Not connected</div>
+      <div class="state-sub" id="state-sub"></div>
+      <div class="timer is-hidden" id="timer">00:00:00</div>
+    </div>
+
+    <!-- error surface, shown only in the failed state -->
+    <div class="notice is-hidden" id="notice">
+      <svg aria-hidden="true" focusable="false" class="notice__icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v6M12 16v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <div class="notice__text"><b id="notice-title">Connection failed</b><span id="notice-detail"></span></div>
+    </div>
+
+    <!-- primary action — label, style and handler are set per state in main.js -->
+    <div class="action">
+      <button type="button" class="btn btn--primary" id="action-btn">Connect</button>
+    </div>
+
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
