@@ -10,6 +10,18 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function PickCredential(arg1) {
+  return window['go']['main']['App']['PickCredential'](arg1);
+}
+
+export function Profile() {
+  return window['go']['main']['App']['Profile']();
+}
+
+export function Reconnect() {
+  return window['go']['main']['App']['Reconnect']();
+}
+
 export function Status() {
   return window['go']['main']['App']['Status']();
 }
