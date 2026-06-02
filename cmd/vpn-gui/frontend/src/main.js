@@ -35,6 +35,7 @@ const profileBtn = el('profile');
 const profileName = el('profile-name');
 const timer = el('timer');
 const notice = el('notice');
+const noticeTitle = el('notice-title');
 const noticeDetail = el('notice-detail');
 const actionBtn = el('action-btn');
 
@@ -60,6 +61,7 @@ for (const r of Object.keys(credEls)) credEls[r].defaultHint = credEls[r].hint.t
 let sinceUnix = 0;          // session-timer origin (0 = not connected)
 let hasProfile = false;     // a complete draft is staged (Connect vs Import)
 let profileServer = '';     // staged server, for the disconnected sub-line / chip
+let actionError = '';       // an immediate Connect failure to surface (e.g. helper down)
 const credLoaded = { ca: false, cert: false, key: false };
 let currentView = 'main';
 
@@ -113,11 +115,15 @@ async function doDisconnect() {
 }
 
 async function doConnect() {
+  actionError = '';
   actionBtn.disabled = true;
   try {
     await Reconnect();
   } catch (e) {
-    console.error('connect failed:', e);
+    // Surface it (e.g. "helper not running") instead of silently staying on
+    // "Not connected"; render() shows it and the next poll keeps it until the
+    // tunnel actually starts.
+    actionError = e && e.message ? e.message : String(e);
   }
   poll();
 }
@@ -195,11 +201,18 @@ function render(st, reachable) {
   }
 
   if (reachable && state === 'failed') {
+    noticeTitle.textContent = 'Connection failed';
     noticeDetail.textContent = st.lastError || 'The connection could not be established.';
+    notice.classList.remove('is-hidden');
+  } else if (actionError) {
+    noticeTitle.textContent = "Couldn't connect";
+    noticeDetail.textContent = actionError;
     notice.classList.remove('is-hidden');
   } else {
     notice.classList.add('is-hidden');
   }
+  // Drop the transient action error once the tunnel is actually progressing.
+  if (state === 'connecting' || state === 'connected' || state === 'reconnecting') actionError = '';
 
   applyAction(state);
   resizeToContent();
@@ -273,6 +286,7 @@ async function openImport() {
     setCred('cert', p.cert.loaded, p.cert.fileName);
     setCred('key', p.key.loaded, p.key.fileName);
   } catch (_) { /* fresh form on failure */ }
+  actionError = '';
   hideImportError();
   showView('import');
   impServer.focus();

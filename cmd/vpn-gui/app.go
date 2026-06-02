@@ -83,6 +83,13 @@ const (
 	roleKey  = "key"
 )
 
+// maxCredentialFileBytes caps how much PickCredential will read from a chosen
+// file. A real CA/cert/key PEM is a few KiB; the cap stops an accidental pick
+// of a huge file from blocking the UI goroutine and ballooning memory. It also
+// matches the IPC frame budget — the whole profile must fit in one frame
+// (frame.MaxFrameSize, 64 KiB) — so a file over this could never connect anyway.
+const maxCredentialFileBytes = 64 << 10
+
 // App is the Wails-bound backend. It forwards tunnel control to the privileged
 // daemon over its socket (via control.Client) and holds the in-progress
 // credential draft the import screen builds. The PEM bytes (the private key in
@@ -145,6 +152,13 @@ func (a *App) PickCredential(role string) (CredInfo, error) {
 		return CredInfo{Role: role, Loaded: false}, nil // cancelled
 	}
 
+	// Bound the read: a credential PEM is tiny, so a large file is almost
+	// certainly the wrong pick — fail early and clearly instead of slurping it.
+	if fi, err := os.Stat(path); err != nil {
+		return CredInfo{}, fmt.Errorf("stat file: %w", err)
+	} else if fi.Size() > maxCredentialFileBytes {
+		return CredInfo{}, fmt.Errorf("%s is too large for a certificate or key — is this the right file?", filepath.Base(path))
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return CredInfo{}, fmt.Errorf("read file: %w", err)
