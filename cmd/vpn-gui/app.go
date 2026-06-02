@@ -5,11 +5,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/govpn/internal/control"
+	"github.com/govpn/internal/profile"
+	"github.com/govpn/internal/profilestore"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -91,16 +94,16 @@ const (
 const maxCredentialFileBytes = 64 << 10
 
 // App is the Wails-bound backend. It forwards tunnel control to the privileged
-// daemon over its socket (via control.Client) and holds the in-progress
-// credential draft the import screen builds. The PEM bytes (the private key in
-// particular) live only here in memory — they are not sent to the webview and
-// are not persisted to disk (persisting a profile across launches is a separate
-// step). All draft state is guarded by mu, since Wails may dispatch bound
-// methods concurrently.
+// daemon over its socket (via control.Client) and holds the credential draft
+// the import screen builds. The PEM bytes are never sent to the webview; once a
+// profile is imported they are persisted to disk (0600) via profilestore so it
+// survives a restart, and reloaded into the draft on launch. All draft state is
+// guarded by mu, since Wails may dispatch bound methods concurrently.
 type App struct {
-	ctx  context.Context
-	cl   *control.Client
-	tray *tray
+	ctx   context.Context
+	cl    *control.Client
+	tray  *tray
+	store *profilestore.Store
 
 	mu       sync.Mutex
 	caPEM    []byte
@@ -113,9 +116,27 @@ type App struct {
 	lastCN   string // CN from the most recent successful validation, for display
 }
 
-// NewApp constructs the backend targeting the daemon's control socket.
+// NewApp constructs the backend targeting the daemon's control socket and loads
+// any previously-saved profile into the draft, so a returning user lands on
+// "Connect" rather than "Import a profile".
 func NewApp() *App {
-	return &App{cl: control.New(helperSocket())}
+	a := &App{cl: control.New(helperSocket())}
+
+	st, err := profilestore.Default()
+	if err != nil {
+		log.Printf("vpn-gui: profile storage unavailable: %v", err)
+		return a
+	}
+	a.store = st
+	switch p, ok, err := st.Load(); {
+	case err != nil:
+		log.Printf("vpn-gui: could not load saved profile: %v", err)
+	case ok:
+		a.caPEM, a.certPEM, a.keyPEM = p.CACertPEM, p.CertPEM, p.KeyPEM
+		a.caName, a.certName, a.keyName = p.CAName, p.CertName, p.KeyName
+		a.form = ConnectForm{Server: p.Server, ServerName: p.ServerName, MTU: p.MTU, TunName: p.TunName}
+	}
+	return a
 }
 
 // startup captures the Wails runtime context (needed for the file dialog and
@@ -200,15 +221,46 @@ func (a *App) PickCredential(role string) (CredInfo, error) {
 	return CredInfo{Role: role, FileName: name, Loaded: true}, nil
 }
 
-// Connect commits the form (server + options) into the draft and brings the
-// tunnel up using the staged credentials. It is what the import screen's Save
-// calls. Validation errors (bad address, key/cert mismatch, expired, wrong CA)
-// come back from control.Connect with a clear message for the form to show.
+// Connect commits the form (server + options) into the draft, persists the
+// validated profile, and brings the tunnel up. It is what the import screen's
+// Save calls. Validation errors (bad address, key/cert mismatch, expired, wrong
+// CA) come back with a clear message for the form to show.
+//
+// The profile is validated and saved before the daemon call, so a usable
+// profile survives even if the daemon or server is momentarily unreachable.
 func (a *App) Connect(form ConnectForm) (control.Connected, error) {
+	if form.MTU < 0 {
+		return control.Connected{}, errors.New("MTU must not be negative")
+	}
+
 	a.mu.Lock()
 	a.form = form
+	ca, cert, key := a.caPEM, a.certPEM, a.keyPEM
+	caN, certN, keyN := a.caName, a.certName, a.keyName
 	a.mu.Unlock()
+
+	if _, err := profile.LoadPEM(ca, cert, key, form.Server, form.ServerName); err != nil {
+		return control.Connected{}, fmt.Errorf("invalid credentials: %w", err)
+	}
+	a.save(form, ca, cert, key, caN, certN, keyN)
+
 	return a.connect()
+}
+
+// save persists the staged profile (best-effort). A failure doesn't block the
+// connect; it just means the profile won't survive a restart.
+func (a *App) save(form ConnectForm, ca, cert, key []byte, caN, certN, keyN string) {
+	if a.store == nil {
+		return
+	}
+	err := a.store.Save(profilestore.Profile{
+		Server: form.Server, ServerName: form.ServerName, MTU: form.MTU, TunName: form.TunName,
+		CACertPEM: ca, CertPEM: cert, KeyPEM: key,
+		CAName: caN, CertName: certN, KeyName: keyN,
+	})
+	if err != nil {
+		log.Printf("vpn-gui: could not save profile: %v", err)
+	}
 }
 
 // Reconnect brings the tunnel up using the already-staged profile — what the

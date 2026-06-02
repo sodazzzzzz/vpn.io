@@ -46,3 +46,9 @@ resolves.
 Point the app at a non-default control socket with the `VPN_IO_HELPER_SOCKET`
 environment variable (handy for testing against a daemon you ran as your own
 user on a throwaway socket).
+
+An imported profile is saved (0600) under the user config dir
+(`~/Library/Application Support/vpn.io/profile.json` on macOS) and reloaded on
+launch, so it survives a restart — see `internal/profilestore`. Override the
+path with `VPN_IO_PROFILE` (handy for tests). The private key is stored as PEM
+on disk; moving it into the OS keychain is a possible future hardening.
