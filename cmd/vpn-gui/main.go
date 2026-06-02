@@ -35,6 +35,7 @@ func main() {
 		// design's contrast numbers assume. The webview repaints per theme.
 		BackgroundColour: &options.RGBA{R: 0xf5, G: 0xf5, B: 0xf7, A: 0xff},
 		OnStartup:        app.startup,
+		OnBeforeClose:    app.onBeforeClose,
 		Bind:             []interface{}{app},
 		Mac: &mac.Options{
 			WebviewIsTransparent: false,
