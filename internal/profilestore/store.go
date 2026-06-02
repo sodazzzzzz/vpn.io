@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -28,6 +29,11 @@ const fileName = "profile.json"
 // pathEnv overrides the profile file path. It lets a package point the store at
 // a specific location and makes the store easy to exercise in tests.
 const pathEnv = "VPN_IO_PROFILE"
+
+// maxProfileBytes caps how much Load reads, so a corrupt or tampered file can't
+// balloon memory. A real profile (server fields + three PEMs as base64 JSON) is
+// a few KiB — far under this.
+const maxProfileBytes = 256 << 10
 
 // Profile is the persisted credential set: the non-secret form fields, the
 // three PEM blobs (base64 in JSON), and the original file names for display.
@@ -84,6 +90,8 @@ func (s *Store) Save(p Profile) error {
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
 
+	// os.CreateTemp already makes the file 0600; set it explicitly so the key
+	// file's permission is obvious here and robust to any future default change.
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod temp file: %w", err)
@@ -104,13 +112,23 @@ func (s *Store) Save(p Profile) error {
 // Load reads the stored profile. The bool is false (with a nil error) when no
 // profile has been saved yet.
 func (s *Store) Load() (Profile, bool, error) {
-	data, err := os.ReadFile(s.Path)
+	f, err := os.Open(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Profile{}, false, nil
 	}
 	if err != nil {
 		return Profile{}, false, fmt.Errorf("read profile: %w", err)
 	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxProfileBytes+1))
+	if err != nil {
+		return Profile{}, false, fmt.Errorf("read profile: %w", err)
+	}
+	if len(data) > maxProfileBytes {
+		return Profile{}, false, fmt.Errorf("profile file is too large (over %d bytes)", maxProfileBytes)
+	}
+
 	var p Profile
 	if err := json.Unmarshal(data, &p); err != nil {
 		return Profile{}, false, fmt.Errorf("parse profile: %w", err)
@@ -124,5 +142,8 @@ func (s *Store) Clear() error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("remove profile: %w", err)
+	}
+	return nil
 }

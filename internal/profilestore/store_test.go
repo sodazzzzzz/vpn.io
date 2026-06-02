@@ -81,6 +81,17 @@ func TestSavePermissions(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsOversized(t *testing.T) {
+	s := tempStore(t)
+	big := make([]byte, (256<<10)+1)
+	if err := os.WriteFile(s.Path, big, 0o600); err != nil {
+		t.Fatalf("write big file: %v", err)
+	}
+	if _, _, err := s.Load(); err == nil {
+		t.Fatal("expected Load to reject an oversized profile file")
+	}
+}
+
 func TestDefaultHonoursEnvOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "custom.json")
 	t.Setenv("VPN_IO_PROFILE", path)

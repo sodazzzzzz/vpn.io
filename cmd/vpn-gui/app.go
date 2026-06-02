@@ -244,7 +244,17 @@ func (a *App) Connect(form ConnectForm) (control.Connected, error) {
 	}
 	a.save(form, ca, cert, key, caN, certN, keyN)
 
-	return a.connect()
+	// Connect with the same snapshot we validated and saved, so a concurrent
+	// PickCredential can't slip different bytes to the daemon.
+	return a.connect(control.Credentials{
+		Server:     form.Server,
+		ServerName: form.ServerName,
+		CACertPEM:  ca,
+		CertPEM:    cert,
+		KeyPEM:     key,
+		MTU:        form.MTU,
+		TunName:    form.TunName,
+	})
 }
 
 // save persists the staged profile (best-effort). A failure doesn't block the
@@ -265,12 +275,13 @@ func (a *App) save(form ConnectForm, ca, cert, key []byte, caN, certN, keyN stri
 
 // Reconnect brings the tunnel up using the already-staged profile — what the
 // main screen's Connect / Try again calls once a profile exists.
-func (a *App) Reconnect() (control.Connected, error) { return a.connect() }
+func (a *App) Reconnect() (control.Connected, error) { return a.connect(a.draftCreds()) }
 
-// connect assembles credentials from the draft and asks the daemon to connect.
-func (a *App) connect() (control.Connected, error) {
+// draftCreds snapshots the staged credentials under the lock.
+func (a *App) draftCreds() control.Credentials {
 	a.mu.Lock()
-	creds := control.Credentials{
+	defer a.mu.Unlock()
+	return control.Credentials{
 		Server:     a.form.Server,
 		ServerName: a.form.ServerName,
 		CACertPEM:  a.caPEM,
@@ -279,8 +290,12 @@ func (a *App) connect() (control.Connected, error) {
 		MTU:        a.form.MTU,
 		TunName:    a.form.TunName,
 	}
-	a.mu.Unlock()
+}
 
+// connect asks the daemon to bring the tunnel up with the given credentials.
+// The caller passes a snapshot, so the bytes validated/saved and the bytes sent
+// to the daemon are the same set even under concurrent draft changes.
+func (a *App) connect(creds control.Credentials) (control.Connected, error) {
 	if creds.Server == "" {
 		return control.Connected{}, errors.New("enter the server address")
 	}
