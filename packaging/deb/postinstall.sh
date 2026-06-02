@@ -1,13 +1,21 @@
 #!/bin/sh
 set -e
 
-# Group whose members may drive the helper (peer-credential check + socket
-# group ownership). Create it and record its gid for the unit's -allow-gid.
+# The 'vpn-io' group gives a member filesystem access to the control socket in
+# /run/vpn-io (the unit runs with Group=vpn-io). Authorisation itself is by uid:
+# SO_PEERCRED reports the peer's uid + primary gid, NOT supplementary groups, so
+# adding a user to vpn-io alone wouldn't pass the peer-cred check — we record the
+# user's uid in /etc/default/vpn-helper for -allow-uid.
 if ! getent group vpn-io >/dev/null 2>&1; then
     groupadd --system vpn-io
 fi
-GID="$(getent group vpn-io | cut -d: -f3)"
-printf 'VPNIO_GID=%s\n' "${GID}" > /etc/default/vpn-helper
+
+VPNIO_UID=""
+if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    VPNIO_UID="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
+    usermod -aG vpn-io "${SUDO_USER}" || true   # filesystem access to the socket
+fi
+printf 'VPNIO_UID=%s\n' "${VPNIO_UID}" > /etc/default/vpn-helper
 chmod 0644 /etc/default/vpn-helper
 
 if [ -d /run/systemd/system ]; then
@@ -15,13 +23,13 @@ if [ -d /run/systemd/system ]; then
     systemctl enable --now vpn-helper.service || true
 fi
 
-# Convenience: add the installing (sudo) user to the group.
-if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
-    usermod -aG vpn-io "${SUDO_USER}" || true
-    echo "vpn.io: added '${SUDO_USER}' to group 'vpn-io' — log out and back in for it to take effect."
+if [ -n "${VPNIO_UID}" ]; then
+    echo "vpn.io: authorised '${SUDO_USER}' (uid ${VPNIO_UID}). Log out and back in once (group 'vpn-io') before connecting."
 else
-    echo "vpn.io: add your desktop user to the 'vpn-io' group, then re-login:"
+    echo "vpn.io: could not detect your desktop user — authorise it manually:"
+    echo "        echo \"VPNIO_UID=\$(id -u <user>)\" | sudo tee /etc/default/vpn-helper"
     echo "        sudo usermod -aG vpn-io <user>"
+    echo "        sudo systemctl restart vpn-helper   # then log out and back in"
 fi
 
 exit 0

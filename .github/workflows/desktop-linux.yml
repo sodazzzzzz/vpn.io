@@ -51,7 +51,7 @@ jobs:
         run: go build -trimpath -o dist/vpn-helper ./cmd/vpn-helper
 
       - name: install nfpm
-        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
 
       - name: package .deb
         env:

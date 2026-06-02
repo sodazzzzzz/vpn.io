@@ -8,13 +8,16 @@ Wants=network-online.target
 Type=simple
 # Runs as root (uid 0): the helper creates the TUN device and edits routes, the
 # nftables firewall and DNS — do not drop the user. Group=vpn-io makes the
-# control socket in /run/vpn-io group-owned by vpn-io; members of that group
-# (admitted by peer-credential via -allow-gid ${VPNIO_GID}, written to
-# /etc/default/vpn-helper by the package) may drive the daemon. Root uid keeps
-# full privileges regardless of the group.
+# control socket in /run/vpn-io group-owned by vpn-io so a member can reach it
+# on the filesystem. Authorisation is by uid (-allow-uid ${VPNIO_UID}, written
+# to /etc/default/vpn-helper by the package): SO_PEERCRED reports the peer's uid
+# and *primary* gid, not supplementary groups, so the uid is the reliable,
+# race-free identity to match. Root uid keeps full privileges regardless of the
+# group. EnvironmentFile is required (no '-'): a missing file fails the service
+# loudly rather than silently starting root-only.
 Group=vpn-io
-EnvironmentFile=-/etc/default/vpn-helper
-ExecStart=/usr/bin/vpn-helper -socket /run/vpn-io/helper.sock -socket-mode 0660 -allow-gid ${VPNIO_GID} -log-level info
+EnvironmentFile=/etc/default/vpn-helper
+ExecStart=/usr/bin/vpn-helper -socket /run/vpn-io/helper.sock -socket-mode 0660 -allow-uid ${VPNIO_UID} -log-level info
 
 # systemd creates /run/vpn-io (root:vpn-io, 0750) on start and removes it on
 # stop — group-traversable so a vpn-io member can reach the socket.
