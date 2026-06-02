@@ -324,12 +324,30 @@ function wireImport() {
 
 // --- theme + boot --------------------------------------------------------
 
+// Theme: a manual light/dark toggle, persisted. With no manual choice yet, we
+// follow the OS preference (and keep following it as it changes); once the user
+// flips the toggle, that choice sticks. A future "Auto" setting will clear the
+// stored choice to return to following the OS.
+const THEME_KEY = 'vpnio.theme';
+
+function setTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+}
+
 function setupTheme() {
   const mq = matchMedia('(prefers-color-scheme: dark)');
-  const apply = () =>
-    document.documentElement.setAttribute('data-theme', mq.matches ? 'dark' : 'light');
-  apply();
-  mq.addEventListener('change', apply);
+  const saved = localStorage.getItem(THEME_KEY);
+  setTheme(saved || (mq.matches ? 'dark' : 'light'));
+
+  mq.addEventListener('change', () => {
+    if (!localStorage.getItem(THEME_KEY)) setTheme(mq.matches ? 'dark' : 'light');
+  });
+
+  el('theme-toggle').onclick = () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem(THEME_KEY, next);
+  };
 }
 
 setupTheme();

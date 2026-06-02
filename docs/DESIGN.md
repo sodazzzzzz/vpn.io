@@ -13,7 +13,11 @@ The shipping Wails front-end should reuse the same CSS custom properties.
 - **Aesthetic:** refined minimalism, Apple-faithful *before* iOS 26 ("Liquid
   Glass"). System SF typography, neutral surfaces, 8-pt grid, soft shadows,
   10–12px radii, calm accents, motion only as signal.
-- **Themes:** light + dark, first-class, follow the OS preference.
+- **Themes:** light + dark, first-class. A manual light/dark toggle in the
+  title bar lets the user choose; the choice is persisted. With no manual
+  choice yet, it follows the OS preference (and tracks OS changes). A future
+  "Auto (follow system)" option in settings will clear the stored choice to
+  return to following the OS.
 - **Form factor:** a fixed-width (~360px) menu-bar / tray popover. Width is
   fixed; the popover grows in height with content.
 
@@ -244,8 +248,10 @@ Quiet by default; motion only conveys state.
   PEM, optional MTU + tun_name).
 - `-webkit-app-region: drag` on the title bar is Wails-specific window dragging;
   keep interactive children `no-drag`.
-- Theme: follow the OS via `prefers-color-scheme`; `data-theme` on the root
-  forces a theme (the mockup uses `?theme=` only for screenshots).
+- Theme: `data-theme` on the root selects the theme. The app sets it from the
+  persisted manual choice, falling back to the OS (`prefers-color-scheme`) until
+  the user toggles; the title-bar toggle writes the choice to local storage.
+  (The mockup uses `?theme=` only for screenshots.)
 - A native menu-bar vibrancy/material can sit *behind* `--c-window`; the opaque
   token is the reliable fallback and what these contrast numbers assume.
 - The mockup is also the **a11y reference**, not just a visual one: it ships the
