@@ -9,6 +9,7 @@ package main
 
 import (
 	"embed"
+	"log"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -41,6 +42,8 @@ func main() {
 		},
 	})
 	if err != nil {
-		println("Error:", err.Error())
+		// Exit non-zero (and log) so a service manager actually sees the
+		// failure; a bare println would let main return 0 and look healthy.
+		log.Fatalf("vpn-gui: %v", err)
 	}
 }
