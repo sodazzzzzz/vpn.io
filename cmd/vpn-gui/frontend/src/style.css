@@ -364,3 +364,10 @@ html, body {
 .tray[data-state="connected"]    .g-shield-check { display: block; }
 .tray[data-state="failed"]       .g-shield-excl  { display: block; }
 .tray[data-state="reconnecting"] .g-retry        { display: block; opacity: 0.55; }
+
+/* theme toggle — show the glyph for the theme you'd switch TO (moon in light,
+   sun in dark). The actual theme is set on :root via data-theme by main.js. */
+.iconbtn .icon-sun { display: none; }
+.iconbtn .icon-moon { display: block; }
+:root[data-theme="dark"] .iconbtn .icon-sun { display: block; }
+:root[data-theme="dark"] .iconbtn .icon-moon { display: none; }
