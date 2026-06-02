@@ -113,16 +113,18 @@
   user-select: none;
 }
 
-/* ---- title bar (also the window drag region in Wails) ------------------- */
-.titlebar {
-  height: 44px;
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  padding: 0 var(--s-3) 0 var(--s-5);
-  -webkit-app-region: drag;
+/* ---- drag strip + view header ------------------------------------------- */
+/* Thin top strip the macOS traffic-light buttons overlay; the only window drag
+   region (interactive children live in .head below, not here). */
+.dragbar { height: 30px; -webkit-app-region: drag; }
+
+/* Left-aligned header below the traffic lights: the profile chip on the main
+   screen, the back button + title on the import sheet. */
+.head {
+  display: flex; align-items: center; gap: var(--s-3);
+  min-height: 36px; padding: 0 var(--s-7);
 }
-.titlebar > .iconbtn, .titlebar > .profile { -webkit-app-region: no-drag; }
+.head--sheet { border-bottom: 0.5px solid var(--c-separator); padding-bottom: var(--s-3); }
 
 .profile {
   display: flex; align-items: center; gap: var(--s-3);
@@ -267,7 +269,6 @@
 /* ===========================================================================
    IMPORT SHEET (second screen) — ported from the mockup
    =========================================================================== */
-.sheet .titlebar { border-bottom: 0.5px solid var(--c-separator); }
 .sheet__title { margin: 0; font-size: var(--fs-head); font-weight: var(--fw-semi); letter-spacing: -0.01em; }
 
 .form { padding: var(--s-6) var(--s-7) var(--s-2); }

@@ -28,7 +28,6 @@ func main() {
 		Width:         360,
 		Height:        420,
 		DisableResize: true,
-		Frameless:     true,
 		AssetServer:   &assetserver.Options{Assets: assets},
 		// Opaque fallback matching --c-window (light). A native menu-bar
 		// material can sit behind this later; the opaque value is what the
@@ -38,6 +37,12 @@ func main() {
 		OnBeforeClose:    app.onBeforeClose,
 		Bind:             []interface{}{app},
 		Mac: &mac.Options{
+			// A hidden (transparent, no title) title bar that still shows the
+			// standard traffic-light buttons top-left, so the window can be
+			// closed/minimised like a normal window. Close hides to the tray
+			// (OnBeforeClose); the content header is inset left to clear the
+			// buttons (see .titlebar in style.css).
+			TitleBar:             mac.TitleBarHidden(),
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 		},

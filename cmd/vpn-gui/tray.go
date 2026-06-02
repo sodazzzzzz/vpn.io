@@ -48,9 +48,15 @@ type tray struct {
 
 func newTray(a *App) *tray { return &tray{app: a, winVisible: true} }
 
-// start registers the systray with the host (Wails) run loop. onReady fires
-// once the menu-bar item exists.
-func (t *tray) start() { systray.Register(t.onReady, func() {}) }
+// start hooks the systray into the host (Wails) run loop. RunWithExternalLoop
+// registers the callbacks and returns a start func that actually creates the
+// status item; that func touches NSStatusBar, so it must run on the Cocoa main
+// thread. Wails calls OnStartup on a goroutine, so we hand the start func to
+// the main thread (runOnMainThread). onReady then fires once the item exists.
+func (t *tray) start() {
+	startTray, _ := systray.RunWithExternalLoop(t.onReady, func() {})
+	runOnMainThread(startTray)
+}
 
 func (t *tray) onReady() {
 	systray.SetTemplateIcon(iconDisconnected, iconDisconnected)
@@ -81,6 +87,7 @@ func (t *tray) onReady() {
 	systray.SetOnClick(func(systray.IMenu) { t.toggleWindow() })
 	systray.SetOnRClick(func(menu systray.IMenu) { _ = menu.ShowMenu() })
 
+	setTrayHighlighted(true) // window starts visible
 	go t.refreshLoop()
 }
 
@@ -119,27 +126,28 @@ func (t *tray) refresh() {
 	setEnabled(t.mConnect, !active && t.app.Profile().HasProfile)
 }
 
-func (t *tray) showWindow() {
-	wruntime.WindowShow(t.app.ctx)
-	t.setVisible(true)
-}
+func (t *tray) showWindow() { t.setWindow(true) }
 
-func (t *tray) toggleWindow() {
-	if t.visible() {
-		wruntime.WindowHide(t.app.ctx)
-		t.setVisible(false)
-	} else {
-		wruntime.WindowShow(t.app.ctx)
-		t.setVisible(true)
-	}
-}
+func (t *tray) toggleWindow() { t.setWindow(!t.visible()) }
 
 // onBeforeClose hides the window instead of quitting, so the app keeps running
 // in the menu bar. Returning true tells Wails to cancel the actual close.
 func (t *tray) onBeforeClose() bool {
-	wruntime.WindowHide(t.app.ctx)
-	t.setVisible(false)
+	t.setWindow(false)
 	return true
+}
+
+// setWindow shows or hides the window, keeping the tracked visibility and the
+// tray icon's highlighted (selected) look in sync — the icon stays highlighted
+// while the window is open, as click feedback.
+func (t *tray) setWindow(show bool) {
+	if show {
+		wruntime.WindowShow(t.app.ctx)
+	} else {
+		wruntime.WindowHide(t.app.ctx)
+	}
+	t.setVisible(show)
+	setTrayHighlighted(show)
 }
 
 func (t *tray) visible() bool     { t.mu.Lock(); defer t.mu.Unlock(); return t.winVisible }
