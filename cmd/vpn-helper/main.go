@@ -75,6 +75,9 @@ func main() {
 	if err := ctrl.Disconnect(); err != nil {
 		log.Warn("vpn-helper: disconnect on shutdown", "err", err)
 	}
+	// Remove the leftover unix socket file. On Windows *socket is a named pipe
+	// (\\.\pipe\...): os.Remove returns an error we ignore — the pipe is
+	// released by the listener's Close, so this is a harmless no-op there.
 	_ = os.Remove(*socket)
 
 	if serveErr != nil {
