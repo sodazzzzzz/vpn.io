@@ -1,6 +1,6 @@
 import './style.css';
 import { Status, Disconnect, PickCredential, Connect, Reconnect, Profile, ImportProfileBundle } from '../wailsjs/go/main/App';
-import { WindowSetSize } from '../wailsjs/runtime/runtime';
+import { WindowSetSize, WindowGetSize } from '../wailsjs/runtime/runtime';
 
 // Two screens in one popover: the main status view and the credential-import
 // sheet. The main view mirrors the daemon (poll Status() every ~1.5s and render
@@ -77,21 +77,25 @@ function hostOf(server) {
   return String(server).replace(/:\d+$/, '');
 }
 
-// Size the native window to the visible view's content (the hidden view is
-// display:none, so it contributes no height). No-op outside Wails (e.g. a
-// headless render), where the runtime isn't injected.
+// Size the native window so the visible view's *content* fits its client area.
+// WindowSetSize sets the OUTER window size, so on Windows (native title bar +
+// borders) we add the real frame: the difference between the outer window
+// (WindowGetSize) and the webview viewport (innerWidth/innerHeight). WebView2
+// does not expose the OS frame via window.outerHeight, so that delta would be 0
+// — going through the Wails Go side is what makes this correct and DPI-safe. On
+// macOS the title bar is hidden, so the frame is ~0 and this just fits content.
+// No-op outside Wails (e.g. a headless render), where the runtime isn't injected.
 function resizeToContent() {
-  requestAnimationFrame(() => {
+  requestAnimationFrame(async () => {
     const h = Math.ceil(tray.getBoundingClientRect().height);
-    if (h > 0) {
-      // Add the window chrome (native title bar + borders) so the *content*
-      // fits, not the outer window. On Windows WindowSetSize sizes the outer
-      // window, so without this the frame eats into the client area and the
-      // bottom (the Connect button) is clipped. On macOS the title bar is
-      // hidden, so the delta is ~0 and this is a no-op.
-      const chrome = Math.max(0, window.outerHeight - window.innerHeight);
-      try { WindowSetSize(360, h + chrome); } catch (_) { /* not running under Wails */ }
-    }
+    if (h <= 0) return;
+    let frameW = 0, frameH = 0;
+    try {
+      const outer = await WindowGetSize();
+      frameW = Math.max(0, outer.w - window.innerWidth);
+      frameH = Math.max(0, outer.h - window.innerHeight);
+    } catch (_) { /* not running under Wails */ }
+    try { WindowSetSize(360 + frameW, h + frameH); } catch (_) { /* not running under Wails */ }
   });
 }
 

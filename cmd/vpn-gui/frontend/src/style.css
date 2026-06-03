@@ -357,7 +357,11 @@
    =========================================================================== */
 html, body {
   margin: 0; padding: 0;
-  width: 360px;
+  /* Fill the actual client width (which on Windows is the window minus its
+     borders) instead of a hard 360px, so the content can't overflow and clip on
+     the right / look shifted off-centre. The window itself is sized to ~360
+     client px by resizeToContent. */
+  width: 100%;
   background: var(--c-window);
   overflow: hidden;
 }
