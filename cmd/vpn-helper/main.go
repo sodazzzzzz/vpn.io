@@ -29,7 +29,7 @@ import (
 
 func main() {
 	var (
-		socket   = flag.String("socket", "/var/run/vpn-io-helper.sock", "control socket path")
+		socket   = flag.String("socket", ipc.DefaultControlPath(), "control socket path (named pipe on Windows)")
 		modeStr  = flag.String("socket-mode", "0660", "control socket file mode (octal)")
 		allowUID = flag.String("allow-uid", "", "comma-separated uids allowed to connect (root always allowed)")
 		allowGID = flag.String("allow-gid", "", "comma-separated gids allowed to connect")
@@ -75,6 +75,9 @@ func main() {
 	if err := ctrl.Disconnect(); err != nil {
 		log.Warn("vpn-helper: disconnect on shutdown", "err", err)
 	}
+	// Remove the leftover unix socket file. On Windows *socket is a named pipe
+	// (\\.\pipe\...): os.Remove returns an error we ignore — the pipe is
+	// released by the listener's Close, so this is a harmless no-op there.
 	_ = os.Remove(*socket)
 
 	if serveErr != nil {
