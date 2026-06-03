@@ -10,9 +10,8 @@ const dialTimeout = 5 * time.Second
 
 // Do connects to the daemon's control socket at path, sends one request, and
 // returns the daemon's response. One request per connection, matching the
-// server side. The transport is the platform's local IPC (a unix socket on
-// linux/darwin); on platforms without one implemented, dialControl returns
-// ErrTransportUnsupported.
+// server side. The transport is the platform's local IPC: a unix-domain socket
+// on linux/darwin, a named pipe on windows.
 func Do(path string, req Request) (Response, error) {
 	conn, err := dialControl(path)
 	if err != nil {

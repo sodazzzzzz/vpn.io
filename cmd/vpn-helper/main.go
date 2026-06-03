@@ -29,7 +29,7 @@ import (
 
 func main() {
 	var (
-		socket   = flag.String("socket", "/var/run/vpn-io-helper.sock", "control socket path")
+		socket   = flag.String("socket", ipc.DefaultControlPath(), "control socket path (named pipe on Windows)")
 		modeStr  = flag.String("socket-mode", "0660", "control socket file mode (octal)")
 		allowUID = flag.String("allow-uid", "", "comma-separated uids allowed to connect (root always allowed)")
 		allowGID = flag.String("allow-gid", "", "comma-separated gids allowed to connect")

@@ -3,25 +3,37 @@
 package ipc
 
 import (
-	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
+
+	"github.com/Microsoft/go-winio"
 )
 
-// ErrTransportUnsupported is returned by Listen on platforms whose local
-// IPC transport is not implemented yet.
-var ErrTransportUnsupported = errors.New("ipc: named-pipe transport not yet implemented on windows")
+// pipeSDDL restricts who may open the control pipe — the Windows analogue of
+// the unix socket's file mode plus the peer-credential check. It grants:
+//   - full control to LocalSystem (SY) and Built-in Administrators (BA), so the
+//     privileged helper service can create and own the pipe;
+//   - read/write to the interactive user (IU), so the GUI running as the
+//     logged-in user can connect.
+//
+// The unix Policy (uid/gid) does not apply on Windows; this ACL is the gate.
+const pipeSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
 
-// Listen is not yet implemented on Windows: the named-pipe transport (with
-// SID-based peer authorization, the analogue of the unix peer-credential
-// check) lands in a follow-up. The signature matches the unix build so the
-// daemon command compiles on all targets; starting it on Windows fails
-// cleanly. The mode/policy parameters are accepted but unused for now.
+// Listen creates the named-pipe control endpoint at path (e.g.
+// \\.\pipe\vpn-io-helper), restricted by pipeSDDL. The mode and policy
+// arguments are unix concepts and are ignored on Windows — the pipe's security
+// descriptor is the authorization gate. The signature matches the unix build so
+// cmd/vpn-helper compiles on every target.
 func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net.Listener, error) {
-	_ = path
-	_ = mode
-	_ = policy
-	_ = log
-	return nil, ErrTransportUnsupported
+	if log == nil {
+		log = slog.Default()
+	}
+	ln, err := winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: pipeSDDL})
+	if err != nil {
+		return nil, fmt.Errorf("ipc: listen pipe %q: %w", path, err)
+	}
+	log.Info("ipc: control pipe listening", "path", path)
+	return ln, nil
 }

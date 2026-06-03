@@ -3,6 +3,7 @@ module github.com/govpn
 go 1.26
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	golang.org/x/sys v0.32.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb

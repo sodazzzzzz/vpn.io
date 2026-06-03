@@ -18,9 +18,10 @@ import (
 	"github.com/govpn/internal/profile"
 )
 
-// defaultSocket matches cmd/vpn-helper's default. The systemd unit uses
-// /run/vpn-io/helper.sock — pass -socket to match it.
-const defaultSocket = "/var/run/vpn-io-helper.sock"
+// defaultSocket matches cmd/vpn-helper's default (a unix socket; a named pipe
+// on Windows). The systemd unit uses /run/vpn-io/helper.sock — pass -socket to
+// match it.
+var defaultSocket = ipc.DefaultControlPath()
 
 func main() {
 	if len(os.Args) < 2 {
