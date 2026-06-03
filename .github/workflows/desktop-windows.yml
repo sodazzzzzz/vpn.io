@@ -1,0 +1,62 @@
+name: desktop-windows
+
+# Builds the Wails desktop GUI and the helper for Windows in CI — there is no
+# Windows dev machine, so this verifies the Windows target compiles and produces
+# a downloadable .exe to test on a real machine. Functional pieces (named-pipe
+# IPC, the Windows service, the installer) land on top once the build is green.
+
+on:
+  push:
+    branches: [main, 'windows-**', 'feat/windows-**']
+  pull_request:
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/ipc/**'
+      - 'internal/tun/**'
+      - '.github/workflows/desktop-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-gui:
+    name: build GUI (windows/amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: build GUI
+        working-directory: cmd/vpn-gui
+        run: wails build
+
+      - name: build helper daemon
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -o dist/vpn-helper.exe ./cmd/vpn-helper
+
+      - name: show outputs
+        run: |
+          Get-ChildItem cmd/vpn-gui/build/bin
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-io-windows-amd64
+          path: |
+            cmd/vpn-gui/build/bin/*.exe
+            dist/vpn-helper.exe
+          if-no-files-found: error
