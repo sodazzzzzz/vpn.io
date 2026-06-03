@@ -90,6 +90,12 @@ type Server struct {
 	registry *Registry
 	limiter  *connLimiter
 
+	// tunWriteMu serializes writes to the shared TUN device. sessionReader
+	// runs one goroutine per connected client and they all write to s.tun;
+	// the device's Write is documented as not safe for concurrent use (it
+	// reuses an internal buffer), so the caller must serialize.
+	tunWriteMu sync.Mutex
+
 	mu         sync.Mutex
 	listener   net.Listener
 	connCancel context.CancelFunc // cancels in-flight handshakes on shutdown
@@ -396,8 +402,11 @@ func (s *Server) sessionReader(sess *Session) {
 				s.log.Debug("isolation drop", "cn", sess.CN, "dst", dst)
 				continue
 			}
-			if _, err := s.tun.Write(body); err != nil {
-				s.log.Warn("tun write", "err", err)
+			s.tunWriteMu.Lock()
+			_, werr := s.tun.Write(body)
+			s.tunWriteMu.Unlock()
+			if werr != nil {
+				s.log.Warn("tun write", "err", werr)
 				return
 			}
 		}
