@@ -118,8 +118,10 @@
    region (interactive children live in .head below, not here). */
 .dragbar { height: 30px; -webkit-app-region: drag; }
 /* Windows has a native title bar (drag + close/min there), so the macOS
-   traffic-light strip is dead space that pushes the content down — drop it. */
-.os-windows .dragbar { display: none; }
+   traffic-light strip isn't needed at its full 30px. Keep a small top gap that
+   roughly matches the bottom one (.action padding-bottom is --s-7) so the
+   content sits evenly between the window edges instead of flush against the top. */
+.os-windows .dragbar { height: var(--s-6); }
 
 /* Left-aligned header below the traffic lights: the profile chip on the main
    screen, the back button + title on the import sheet. */

@@ -347,6 +347,10 @@ function wireImport() {
   impCancel.onclick = () => showView('main');
   impBack.onclick = () => showView('main');
   profileBtn.onclick = openImport;
+  // Resize the window the instant the Advanced section opens/closes, instead of
+  // waiting for the next status poll (which is what made it feel laggy).
+  const advanced = document.querySelector('#view-import .disclosure');
+  if (advanced) advanced.addEventListener('toggle', resizeToContent);
 }
 
 // --- theme + boot --------------------------------------------------------
