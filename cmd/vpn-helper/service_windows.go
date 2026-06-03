@@ -44,7 +44,9 @@ func (s *daemonService) Execute(_ []string, r <-chan svc.ChangeRequest, status c
 			// The daemon stopped on its own (typically a fatal error).
 			status <- svc.Status{State: svc.StopPending}
 			if err != nil {
-				return false, 1
+				// true => a service-specific exit code, not a Win32 one (Win32 1
+				// = ERROR_INVALID_FUNCTION would be misleading in the Event Log).
+				return true, 1
 			}
 			return false, 0
 		case c := <-r:
@@ -52,7 +54,10 @@ func (s *daemonService) Execute(_ []string, r <-chan svc.ChangeRequest, status c
 			case svc.Interrogate:
 				status <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
-				status <- svc.Status{State: svc.StopPending}
+				// Generous wait hint: tearing the tunnel down (TLS close, route/
+				// DNS cleanup, Wintun) takes a moment, and without it the SCM may
+				// kill us mid-cleanup on its default timeout.
+				status <- svc.Status{State: svc.StopPending, WaitHint: 30000}
 				cancel()
 				<-done // let the daemon disconnect and clean up
 				return false, 0

@@ -83,7 +83,7 @@ func main() {
 	policy := ipc.Policy{AllowUID: uids, AllowGID: gids}
 
 	run := func(ctx context.Context) error {
-		return runDaemon(ctx, *socket, mode, *modeStr, policy, log)
+		return runDaemon(ctx, *socket, mode, policy, log)
 	}
 
 	// When started by the Windows Service Control Manager, run under it so it can
@@ -100,12 +100,12 @@ func main() {
 // runDaemon brings up the control endpoint and serves Connect/Disconnect/Status
 // until ctx is cancelled, then tears the tunnel down. Shared by the console and
 // Windows-service entry points.
-func runDaemon(ctx context.Context, socket string, mode os.FileMode, modeStr string, policy ipc.Policy, log *slog.Logger) error {
+func runDaemon(ctx context.Context, socket string, mode os.FileMode, policy ipc.Policy, log *slog.Logger) error {
 	ln, err := ipc.Listen(socket, mode, policy, log)
 	if err != nil {
 		return err
 	}
-	log.Info("vpn-helper listening", "socket", socket, "mode", modeStr,
+	log.Info("vpn-helper listening", "socket", socket, "mode", fmt.Sprintf("%#o", mode),
 		"allow_uid", policy.AllowUID, "allow_gid", policy.AllowGID)
 
 	ctrl := helper.New(log)
