@@ -15,12 +15,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -113,8 +117,11 @@ func cmdServe(args []string) error {
 	if *server == "" {
 		return fmt.Errorf("-server is required")
 	}
-	// Fail fast if the CA can't sign (e.g. ca.key missing) before going online.
-	if _, err := ca.Load(*dir); err != nil {
+	// Load the CA once: it holds ca.key in memory for signing, so we don't
+	// re-read the key on every onboarding (and we fail fast here if it's
+	// missing, before going online).
+	authority, err := ca.Load(*dir)
+	if err != nil {
 		return fmt.Errorf("load CA from %s: %w", *dir, err)
 	}
 
@@ -125,23 +132,37 @@ func cmdServe(args []string) error {
 	store := invite.New(*storePath)
 	log.Printf("vpn-bot online as @%s", bot.Self.UserName)
 
+	// Stop cleanly on SIGTERM / Interrupt (systemd stop). Updates are processed
+	// one at a time, so an in-flight onboarding finishes before we exit — no
+	// half-issued client left behind.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	// Updates are handled one at a time: issuing writes per-client files under
-	// the CA dir, and the volume (a handful of friends) never needs parallelism.
-	for update := range bot.GetUpdatesChan(u) {
-		if update.Message == nil || update.Message.From == nil {
-			continue
+	updates := bot.GetUpdatesChan(u)
+	for {
+		select {
+		case <-ctx.Done():
+			bot.StopReceivingUpdates()
+			log.Print("vpn-bot shutting down")
+			return nil
+		case update, ok := <-updates:
+			if !ok {
+				return nil
+			}
+			if update.Message == nil || update.Message.From == nil {
+				continue
+			}
+			handleMessage(bot, store, authority, update.Message, *server, *serverName)
 		}
-		handleMessage(bot, store, update.Message, *dir, *server, *serverName)
 	}
-	return nil
 }
 
 const helpText = "Send me your one-time invite token and I'll send back your vpn.io profile (.vpnio). " +
 	"Ask the owner for a token if you don't have one."
 
-func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message, dir, server, serverName string) {
+func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName string) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
@@ -156,14 +177,21 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Mess
 	}
 
 	// Any other short text is treated as a candidate invite token.
-	who := fmt.Sprintf("@%s (id %d)", msg.From.UserName, msg.From.ID)
+	who := userLabel(msg.From)
 	name, err := store.Redeem(text, who)
 	if err != nil {
-		reply(bot, msg.Chat.ID, "That invite is invalid or already used. Ask the owner for a new one.")
+		if errors.Is(err, invite.ErrNotFound) {
+			reply(bot, msg.Chat.ID, "That invite is invalid or already used. Ask the owner for a new one.")
+		} else {
+			// A real store failure (disk, permissions) — the user's token may
+			// be fine, so don't call it invalid. Log it and apologise.
+			log.Printf("redeem token from %s: %v", who, err)
+			reply(bot, msg.Chat.ID, "Sorry — something went wrong on our side. The owner has been notified.")
+		}
 		return
 	}
 
-	bundle, err := issueBundle(dir, name, server, serverName)
+	bundle, err := issueBundle(authority, name, server, serverName)
 	if err != nil {
 		// Don't leak internals to the user; log for the operator.
 		log.Printf("issue bundle for %q (%s): %v", name, who, err)
@@ -174,10 +202,24 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Mess
 	doc := tgbotapi.NewDocument(msg.Chat.ID, tgbotapi.FileBytes{Name: name + ".vpnio", Bytes: bundle})
 	doc.Caption = "Your vpn.io profile. In the app choose \"Import a profile file\" and pick this file."
 	if _, err := bot.Send(doc); err != nil {
+		// The token is already spent and the cert issued, so don't leave the
+		// user with silence — tell them; the owner can re-issue if needed.
 		log.Printf("send profile to %s: %v", who, err)
+		reply(bot, msg.Chat.ID, "Your profile was created but I couldn't send the file — please contact the owner.")
 		return
 	}
 	log.Printf("issued profile %q to %s", name, who)
+}
+
+// userLabel is a human-ish audit string for a Telegram user. UserName is
+// optional, so fall back to the (always present) first name; the numeric ID is
+// the reliable identifier either way.
+func userLabel(u *tgbotapi.User) string {
+	name := u.UserName
+	if name == "" {
+		name = u.FirstName
+	}
+	return fmt.Sprintf("%s (id %d)", name, u.ID)
 }
 
 func reply(bot *tgbotapi.BotAPI, chatID int64, text string) {
@@ -186,25 +228,21 @@ func reply(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
-// issueBundle issues a fresh client certificate and packs it into a .vpnio
-// bundle. It signs with the CA key in dir, so this runs where ca.key lives.
-func issueBundle(dir, name, server, serverName string) ([]byte, error) {
-	a, err := ca.Load(dir)
-	if err != nil {
-		return nil, fmt.Errorf("load CA: %w", err)
-	}
-	if err := a.IssueClient(name); err != nil {
+// issueBundle issues a fresh client certificate with the loaded CA and packs it
+// into a .vpnio bundle.
+func issueBundle(authority *ca.CA, name, server, serverName string) ([]byte, error) {
+	if err := authority.IssueClient(name); err != nil {
 		return nil, fmt.Errorf("issue client %q: %w", name, err)
 	}
-	caPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	caPEM, err := os.ReadFile(filepath.Join(authority.Dir, "ca.crt"))
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert: %w", err)
 	}
-	certPEM, err := os.ReadFile(filepath.Join(dir, "clients", name+".crt"))
+	certPEM, err := os.ReadFile(filepath.Join(authority.Dir, "clients", name+".crt"))
 	if err != nil {
 		return nil, fmt.Errorf("read client cert: %w", err)
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(dir, "clients", name+".key"))
+	keyPEM, err := os.ReadFile(filepath.Join(authority.Dir, "clients", name+".key"))
 	if err != nil {
 		return nil, fmt.Errorf("read client key: %w", err)
 	}
