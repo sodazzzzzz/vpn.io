@@ -49,6 +49,7 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 ManifestDPIAware true
 
 !include "MUI.nsh"
+!include "LogicLib.nsh" # ${If}/${EndIf} for checking service-management exit codes
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
@@ -86,6 +87,14 @@ Section
 
     SetOutPath $INSTDIR
 
+    # Upgrade path: an existing install leaves a running service that (a) holds a
+    # lock on vpn-helper.exe, so the File step below would fail with "Access
+    # Denied", and (b) makes a fresh -install reject re-registration. Remove it
+    # first via the old binary — -uninstall waits for the service to actually
+    # stop, which releases the lock. No-op on a clean install (no such file).
+    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -uninstall'
+    Pop $0
+
     !insertmacro wails.files
 
     # vpn.io needs a privileged background service to own the TUN device, and the
@@ -97,6 +106,10 @@ Section
     DetailPrint "Registering the vpn.io background service..."
     nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -install'
     Pop $0
+    ${If} $0 != 0
+        MessageBox MB_OK|MB_ICONSTOP "Could not register the vpn.io background service (exit code $0). Installation cannot continue."
+        Abort
+    ${EndIf}
     DetailPrint "Starting the vpn.io background service..."
     nsExec::ExecToLog 'sc start vpn-io-helper'
     Pop $0
@@ -113,10 +126,18 @@ SectionEnd
 Section "uninstall"
     !insertmacro wails.setShellContext
 
-    # Stop and unregister the background service before its binary is deleted.
+    # Stop and unregister the background service before its binary is deleted. If
+    # that fails (e.g. a wedged service), fall back to sc so we don't delete the
+    # binary and strand a dead SCM entry that would block a future reinstall.
     DetailPrint "Removing the vpn.io background service..."
     nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -uninstall'
     Pop $0
+    ${If} $0 != 0
+        nsExec::ExecToLog 'sc stop vpn-io-helper'
+        Pop $0
+        nsExec::ExecToLog 'sc delete vpn-io-helper'
+        Pop $0
+    ${EndIf}
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 

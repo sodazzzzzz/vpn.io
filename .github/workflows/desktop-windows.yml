@@ -58,11 +58,13 @@ jobs:
 
       - name: fetch and verify Wintun driver
         # Wintun is a kernel driver — pin and verify the official release archive
-        # (SHA-256 from wintun.net) before bundling it into the installer.
+        # before bundling it into the installer. The SHA-256 below is the
+        # "SHA2/256" sum published next to the download on https://www.wintun.net/
+        # (verify it there when bumping the version).
         working-directory: cmd/vpn-gui/build/windows
         run: |
           $url  = "https://www.wintun.net/builds/wintun-0.14.1.zip"
-          $want = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+          $want = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51" # wintun.net, v0.14.1
           Invoke-WebRequest -Uri $url -OutFile wintun.zip
           $got = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
           if ($got -ne $want) {
@@ -80,7 +82,12 @@ jobs:
 
       - name: name the installer
         working-directory: cmd/vpn-gui/build/bin
-        run: Copy-Item vpn-gui-amd64-installer.exe vpn-io-setup.exe
+        # NSIS names it <wails.json name>-<arch>-installer.exe; match by glob so a
+        # rename of the app doesn't silently break this step.
+        run: |
+          $inst = Get-ChildItem *-amd64-installer.exe | Select-Object -First 1
+          if (-not $inst) { Write-Error "installer .exe not found in build/bin"; exit 1 }
+          Copy-Item $inst.FullName vpn-io-setup.exe
 
       - name: show outputs
         run: |
