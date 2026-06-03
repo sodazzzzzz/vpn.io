@@ -88,6 +88,19 @@ Section
 
     !insertmacro wails.files
 
+    # vpn.io needs a privileged background service to own the TUN device, and the
+    # Wintun driver it loads at runtime. Ship both next to the GUI (CI drops them
+    # into ..\ beside this script), then register the service and start it now —
+    # the installer already runs elevated, so this is the moment to do it.
+    File "..\vpn-helper.exe"
+    File "..\wintun.dll"
+    DetailPrint "Registering the vpn.io background service..."
+    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -install'
+    Pop $0
+    DetailPrint "Starting the vpn.io background service..."
+    nsExec::ExecToLog 'sc start vpn-io-helper'
+    Pop $0
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
@@ -99,6 +112,11 @@ SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    # Stop and unregister the background service before its binary is deleted.
+    DetailPrint "Removing the vpn.io background service..."
+    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -uninstall'
+    Pop $0
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
