@@ -111,6 +111,12 @@ func (d *device) Read(p []byte) (int, error) {
 		if n == 0 {
 			return 0, io.EOF
 		}
+		// Defensive: wireguard/tun returns at most len(bufs) packets today, but
+		// clamp so a future contract change can't drive the rsizes/rbufs
+		// indexing below out of range.
+		if n > len(d.rbufs) {
+			n = len(d.rbufs)
+		}
 		d.rcount = n
 		d.rnext = 0
 	}
