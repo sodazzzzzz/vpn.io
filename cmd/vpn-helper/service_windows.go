@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -60,8 +61,9 @@ func (s *daemonService) Execute(_ []string, r <-chan svc.ChangeRequest, status c
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ready := make(chan struct{})
+	var readyOnce sync.Once
 	done := make(chan error, 1)
-	go func() { done <- s.run(ctx, func() { close(ready) }) }()
+	go func() { done <- s.run(ctx, func() { readyOnce.Do(func() { close(ready) }) }) }()
 
 	// Report Running only once the control endpoint is actually accepting, or
 	// fail fast if the daemon errors before that (e.g. the pipe is busy or
@@ -104,7 +106,11 @@ func (s *daemonService) Execute(_ []string, r <-chan svc.ChangeRequest, status c
 				status <- svc.Status{State: svc.StopPending, WaitHint: 30000}
 				logInfo("vpn-helper service stopping")
 				cancel()
-				<-done // let the daemon disconnect and clean up
+				// Wait for the daemon to disconnect and clean up, and surface a
+				// teardown failure to the Event Log (the only operator channel).
+				if err := <-done; err != nil {
+					logErr("vpn-helper shutdown: " + err.Error())
+				}
 				return false, 0
 			default:
 			}
