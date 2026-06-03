@@ -443,14 +443,14 @@ func TestBundleStringRedactsKey(t *testing.T) {
 		CertPEM:   string(certPEM),
 		KeyPEM:    string(keyPEM),
 	}
-	for _, s := range []string{
-		b.String(),
-		fmt.Sprintf("%v", b),
-		fmt.Sprintf("%s", b),
-		fmt.Sprintf("%#v", b),
-	} {
-		if strings.Contains(s, "-----BEGIN") {
-			t.Errorf("Bundle formatting leaked PEM material: %s", s)
+	if strings.Contains(b.String(), "-----BEGIN") {
+		t.Error("Bundle.String() leaked PEM material")
+	}
+	// Verb is a variable so staticcheck doesn't fold "%s" into a String() call:
+	// the point is to exercise the fmt path the way a stray log line would.
+	for _, verb := range []string{"%v", "%s", "%+v", "%#v"} {
+		if s := fmt.Sprintf(verb, b); strings.Contains(s, "-----BEGIN") {
+			t.Errorf("Bundle %q formatting leaked PEM material: %s", verb, s)
 		}
 	}
 }

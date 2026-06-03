@@ -214,6 +214,7 @@ func cmdExportProfile(args []string) error {
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
+		_ = os.Remove(outPath) // don't leave a half-written bundle behind
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	if err := f.Close(); err != nil {
