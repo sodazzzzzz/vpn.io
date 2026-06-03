@@ -113,6 +113,12 @@ Section
     DetailPrint "Starting the vpn.io background service..."
     nsExec::ExecToLog 'sc start vpn-io-helper'
     Pop $0
+    ${If} $0 != 0
+        # Not fatal: the service is registered as auto-start, so a reboot brings
+        # it up. Warn (don't Abort) so the user isn't left with a working install
+        # but a silently dead tunnel.
+        MessageBox MB_OK|MB_ICONEXCLAMATION "vpn.io is installed, but its background service did not start (code $0). Restart your computer, then open vpn.io."
+    ${EndIf}
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
