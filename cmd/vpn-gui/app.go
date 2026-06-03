@@ -11,15 +11,17 @@ import (
 	"sync"
 
 	"github.com/govpn/internal/control"
+	"github.com/govpn/internal/ipc"
 	"github.com/govpn/internal/profile"
 	"github.com/govpn/internal/profilestore"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// defaultSocket matches cmd/vpn-helper's default control socket. A packaged
-// macOS launchd job will set its own path; wire that through when packaging
-// lands (the systemd unit already uses /run/vpn-io/helper.sock on Linux).
-const defaultSocket = "/var/run/vpn-io-helper.sock"
+// defaultSocket matches cmd/vpn-helper's default control endpoint (a unix
+// socket; a named pipe on Windows). A packaged macOS launchd job will set its
+// own path; wire that through when packaging lands (the systemd unit already
+// uses /run/vpn-io/helper.sock on Linux).
+var defaultSocket = ipc.DefaultControlPath()
 
 // socketEnv overrides the control-socket path. It lets a launchd/systemd
 // package point the GUI at the path its daemon actually listens on, and lets a
