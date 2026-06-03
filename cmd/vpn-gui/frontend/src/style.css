@@ -280,6 +280,16 @@
 }
 .group-label:first-child { margin-top: 0; }
 
+/* "or set up manually" rule between the one-file import and the manual form */
+.or-sep {
+  display: flex; align-items: center; gap: var(--s-3);
+  margin: var(--s-5) 0;
+  font-size: var(--fs-caption); color: var(--c-text-3);
+}
+.or-sep::before, .or-sep::after {
+  content: ""; flex: 1; height: 0.5px; background: var(--c-separator);
+}
+
 .field { margin-bottom: var(--s-5); }
 .field__label { display: block; font-size: var(--fs-caption); color: var(--c-text-2); margin: 0 var(--s-1) var(--s-2); }
 .field__label .opt { color: var(--c-text-3); font-weight: var(--fw-reg); }
