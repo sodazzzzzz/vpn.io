@@ -2,8 +2,8 @@ name: desktop-windows
 
 # Builds the Wails desktop GUI and the helper for Windows in CI — there is no
 # Windows dev machine, so this verifies the Windows target compiles and produces
-# a downloadable .exe to test on a real machine. Functional pieces (named-pipe
-# IPC, the Windows service, the installer) land on top once the build is green.
+# downloadable artifacts to test on a real machine: the loose .exe files (for a
+# quick run) and a one-click installer (.exe) that registers the helper service.
 
 on:
   push:
@@ -39,14 +39,55 @@ jobs:
       - name: install wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
-      - name: build GUI
-        working-directory: cmd/vpn-gui
-        run: wails build
+      - name: ensure NSIS on PATH
+        # The runner image ships NSIS, but install it if missing and make sure
+        # makensis is on PATH so `wails build -nsis` can find it.
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          $nsis = "C:\Program Files (x86)\NSIS"
+          if (Test-Path $nsis) { Add-Content -Path $env:GITHUB_PATH -Value $nsis }
 
       - name: build helper daemon
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           go build -trimpath -o dist/vpn-helper.exe ./cmd/vpn-helper
+          # The installer bundles the helper next to project.nsi as ..\vpn-helper.exe.
+          Copy-Item dist/vpn-helper.exe cmd/vpn-gui/build/windows/vpn-helper.exe
+
+      - name: fetch and verify Wintun driver
+        # Wintun is a kernel driver — pin and verify the official release archive
+        # before bundling it into the installer. The SHA-256 below is the
+        # "SHA2/256" sum published next to the download on https://www.wintun.net/
+        # (verify it there when bumping the version).
+        working-directory: cmd/vpn-gui/build/windows
+        run: |
+          $url  = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          $want = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51" # wintun.net, v0.14.1
+          Invoke-WebRequest -Uri $url -OutFile wintun.zip
+          $got = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $want) {
+            Write-Error "Wintun checksum mismatch: got $got, want $want"
+            exit 1
+          }
+          Expand-Archive -Path wintun.zip -DestinationPath wintun-tmp -Force
+          Copy-Item wintun-tmp/wintun/bin/amd64/wintun.dll -Destination wintun.dll
+          Remove-Item wintun.zip
+          Remove-Item -Recurse wintun-tmp
+
+      - name: build GUI + installer
+        working-directory: cmd/vpn-gui
+        run: wails build -nsis
+
+      - name: name the installer
+        working-directory: cmd/vpn-gui/build/bin
+        # NSIS names it <wails.json name>-<arch>-installer.exe; match by glob so a
+        # rename of the app doesn't silently break this step.
+        run: |
+          $inst = Get-ChildItem *-amd64-installer.exe | Select-Object -First 1
+          if (-not $inst) { Write-Error "installer .exe not found in build/bin"; exit 1 }
+          Copy-Item $inst.FullName vpn-io-setup.exe
 
       - name: show outputs
         run: |
@@ -57,6 +98,12 @@ jobs:
         with:
           name: vpn-io-windows-amd64
           path: |
-            cmd/vpn-gui/build/bin/*.exe
+            cmd/vpn-gui/build/bin/vpn.io.exe
             dist/vpn-helper.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-io-windows-installer
+          path: cmd/vpn-gui/build/bin/vpn-io-setup.exe
           if-no-files-found: error

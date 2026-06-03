@@ -49,6 +49,7 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 ManifestDPIAware true
 
 !include "MUI.nsh"
+!include "LogicLib.nsh" # ${If}/${EndIf} for checking service-management exit codes
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
@@ -86,7 +87,38 @@ Section
 
     SetOutPath $INSTDIR
 
+    # Upgrade path: an existing install leaves a running service that (a) holds a
+    # lock on vpn-helper.exe, so the File step below would fail with "Access
+    # Denied", and (b) makes a fresh -install reject re-registration. Remove it
+    # first via the old binary — -uninstall waits for the service to actually
+    # stop, which releases the lock. No-op on a clean install (no such file).
+    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -uninstall'
+    Pop $0
+
     !insertmacro wails.files
+
+    # vpn.io needs a privileged background service to own the TUN device, and the
+    # Wintun driver it loads at runtime. Ship both next to the GUI (CI drops them
+    # into ..\ beside this script), then register the service and start it now —
+    # the installer already runs elevated, so this is the moment to do it.
+    File "..\vpn-helper.exe"
+    File "..\wintun.dll"
+    DetailPrint "Registering the vpn.io background service..."
+    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -install'
+    Pop $0
+    ${If} $0 != 0
+        MessageBox MB_OK|MB_ICONSTOP "Could not register the vpn.io background service (exit code $0). Installation cannot continue."
+        Abort
+    ${EndIf}
+    DetailPrint "Starting the vpn.io background service..."
+    nsExec::ExecToLog 'sc start vpn-io-helper'
+    Pop $0
+    ${If} $0 != 0
+        # Not fatal: the service is registered as auto-start, so a reboot brings
+        # it up. Warn (don't Abort) so the user isn't left with a working install
+        # but a silently dead tunnel.
+        MessageBox MB_OK|MB_ICONEXCLAMATION "vpn.io is installed, but its background service did not start (code $0). Restart your computer, then open vpn.io."
+    ${EndIf}
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -99,6 +131,19 @@ SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    # Stop and unregister the background service before its binary is deleted. If
+    # that fails (e.g. a wedged service), fall back to sc so we don't delete the
+    # binary and strand a dead SCM entry that would block a future reinstall.
+    DetailPrint "Removing the vpn.io background service..."
+    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -uninstall'
+    Pop $0
+    ${If} $0 != 0
+        nsExec::ExecToLog 'sc stop vpn-io-helper'
+        Pop $0
+        nsExec::ExecToLog 'sc delete vpn-io-helper'
+        Pop $0
+    ${EndIf}
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
