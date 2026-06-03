@@ -8,6 +8,10 @@ import (
 	"strconv"
 )
 
+// defaultTUNName is used when the caller leaves the interface name empty.
+// An empty name lets the kernel auto-assign the next free tunN.
+const defaultTUNName = ""
+
 // configureDevice assigns ip/netmask to the named interface and brings it up
 // using iproute2 (`ip` command). Requires CAP_NET_ADMIN (typically root).
 //
