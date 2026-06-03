@@ -93,18 +93,34 @@ func TestImportBundleStagesProfile(t *testing.T) {
 	if err := c.IssueClient("laptop"); err != nil {
 		t.Fatalf("IssueClient: %v", err)
 	}
-	caPEM, _ := os.ReadFile(filepath.Join(caDir, "ca.crt"))
-	certPEM, _ := os.ReadFile(filepath.Join(caDir, "clients", "laptop.crt"))
-	keyPEM, _ := os.ReadFile(filepath.Join(caDir, "clients", "laptop.key"))
+	caPEM, err := os.ReadFile(filepath.Join(caDir, "ca.crt"))
+	if err != nil {
+		t.Fatalf("read ca.crt: %v", err)
+	}
+	certPEM, err := os.ReadFile(filepath.Join(caDir, "clients", "laptop.crt"))
+	if err != nil {
+		t.Fatalf("read client cert: %v", err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(caDir, "clients", "laptop.key"))
+	if err != nil {
+		t.Fatalf("read client key: %v", err)
+	}
 	bundle, err := profile.MarshalBundle(caPEM, certPEM, keyPEM, "vpn.example.com:8443", "")
 	if err != nil {
 		t.Fatalf("MarshalBundle: %v", err)
 	}
 
 	a := NewApp()
+	// A previously-customised MTU / TUN name must survive a bundle import (the
+	// bundle doesn't carry them).
+	a.form.MTU = 1400
+	a.form.TunName = "utun7"
 	info, err := a.importBundleData(bundle, "laptop.vpnio")
 	if err != nil {
 		t.Fatalf("importBundleData: %v", err)
+	}
+	if info.MTU != 1400 || info.TunName != "utun7" {
+		t.Errorf("advanced settings not preserved: MTU=%d TunName=%q", info.MTU, info.TunName)
 	}
 	if !info.HasProfile {
 		t.Error("HasProfile = false, want true after import")

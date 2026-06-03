@@ -272,15 +272,19 @@ func (a *App) importBundleData(data []byte, sourceName string) (ProfileInfo, err
 	a.caPEM, a.certPEM, a.keyPEM = p.CACertPEM, p.CertPEM, p.KeyPEM
 	// One file fills all three slots; show its name on each row.
 	a.caName, a.certName, a.keyName = sourceName, sourceName, sourceName
-	a.form = ConnectForm{Server: p.Server, ServerName: p.ServerName}
+	// Keep any advanced knobs (MTU / TUN name) the user already set — the bundle
+	// carries the identity and server address, not those — so an import doesn't
+	// silently wipe a customised MTU.
+	a.form = ConnectForm{Server: p.Server, ServerName: p.ServerName, MTU: a.form.MTU, TunName: a.form.TunName}
 	a.lastCN = p.CommonName
+	info := a.profileInfoLocked()
 	form := a.form
 	ca, cert, key := a.caPEM, a.certPEM, a.keyPEM
 	caN, certN, keyN := a.caName, a.certName, a.keyName
 	a.mu.Unlock()
 
 	a.save(form, ca, cert, key, caN, certN, keyN)
-	return a.Profile(), nil
+	return info, nil
 }
 
 // Connect commits the form (server + options) into the draft, persists the
@@ -387,6 +391,14 @@ func (a *App) connect(creds control.Credentials) (control.Connected, error) {
 func (a *App) Profile() ProfileInfo {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.profileInfoLocked()
+}
+
+// profileInfoLocked builds the draft summary for the UI. The caller must hold
+// a.mu — this lets a caller that just mutated the draft under the lock return a
+// consistent snapshot without dropping and reacquiring it (and racing a
+// concurrent Wails dispatch in the gap).
+func (a *App) profileInfoLocked() ProfileInfo {
 	return ProfileInfo{
 		HasProfile: a.form.Server != "" && len(a.caPEM) > 0 && len(a.certPEM) > 0 && len(a.keyPEM) > 0,
 		Server:     a.form.Server,
