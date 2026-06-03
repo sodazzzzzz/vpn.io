@@ -117,6 +117,9 @@
 /* Thin top strip the macOS traffic-light buttons overlay; the only window drag
    region (interactive children live in .head below, not here). */
 .dragbar { height: 30px; -webkit-app-region: drag; }
+/* Windows has a native title bar (drag + close/min there), so the macOS
+   traffic-light strip is dead space that pushes the content down — drop it. */
+.os-windows .dragbar { display: none; }
 
 /* Left-aligned header below the traffic lights: the profile chip on the main
    screen, the back button + title on the import sheet. */

@@ -84,7 +84,13 @@ function resizeToContent() {
   requestAnimationFrame(() => {
     const h = Math.ceil(tray.getBoundingClientRect().height);
     if (h > 0) {
-      try { WindowSetSize(360, h); } catch (_) { /* not running under Wails */ }
+      // Add the window chrome (native title bar + borders) so the *content*
+      // fits, not the outer window. On Windows WindowSetSize sizes the outer
+      // window, so without this the frame eats into the client area and the
+      // bottom (the Connect button) is clipped. On macOS the title bar is
+      // hidden, so the delta is ~0 and this is a no-op.
+      const chrome = Math.max(0, window.outerHeight - window.innerHeight);
+      try { WindowSetSize(360, h + chrome); } catch (_) { /* not running under Wails */ }
     }
   });
 }
@@ -371,6 +377,12 @@ function setupTheme() {
     setTheme(next);
     localStorage.setItem(THEME_KEY, next);
   };
+}
+
+// Tag the platform so CSS can drop the macOS-only traffic-light drag strip on
+// Windows, whose native title bar already drags and closes the window.
+if (navigator.userAgent.includes('Windows')) {
+  document.documentElement.classList.add('os-windows');
 }
 
 setupTheme();
