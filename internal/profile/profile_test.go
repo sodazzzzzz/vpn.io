@@ -350,3 +350,85 @@ func TestProfileStringRedactsKey(t *testing.T) {
 		t.Errorf("json.Marshal leaked PEM material: %s", b)
 	}
 }
+
+func TestBundleRoundTrip(t *testing.T) {
+	_, dir := testCA(t, "alice")
+	caPEM, certPEM, keyPEM := clientPEMs(t, dir, "alice")
+
+	data, err := MarshalBundle(caPEM, certPEM, keyPEM, testServer, "")
+	if err != nil {
+		t.Fatalf("MarshalBundle: %v", err)
+	}
+
+	p, err := ParseBundle(data)
+	if err != nil {
+		t.Fatalf("ParseBundle: %v", err)
+	}
+	if p.Server != testServer {
+		t.Errorf("Server = %q, want %q", p.Server, testServer)
+	}
+	if p.CommonName != "alice" {
+		t.Errorf("CommonName = %q, want alice", p.CommonName)
+	}
+	if string(p.CACertPEM) != string(caPEM) ||
+		string(p.CertPEM) != string(certPEM) ||
+		string(p.KeyPEM) != string(keyPEM) {
+		t.Error("PEM bytes did not survive the bundle round-trip")
+	}
+}
+
+func TestBundleCarriesServerName(t *testing.T) {
+	_, dir := testCA(t, "alice")
+	caPEM, certPEM, keyPEM := clientPEMs(t, dir, "alice")
+
+	data, err := MarshalBundle(caPEM, certPEM, keyPEM, "10.0.0.5:8443", "vpn.example.com")
+	if err != nil {
+		t.Fatalf("MarshalBundle: %v", err)
+	}
+	p, err := ParseBundle(data)
+	if err != nil {
+		t.Fatalf("ParseBundle: %v", err)
+	}
+	if p.ServerName != "vpn.example.com" {
+		t.Errorf("ServerName = %q, want vpn.example.com", p.ServerName)
+	}
+}
+
+func TestMarshalBundleRejectsMismatchedKey(t *testing.T) {
+	_, dir := testCA(t, "alice", "bob")
+	caPEM, certPEM, _ := clientPEMs(t, dir, "alice")
+	_, _, bobKey := clientPEMs(t, dir, "bob")
+
+	// alice's cert with bob's key must not produce a bundle.
+	if _, err := MarshalBundle(caPEM, certPEM, bobKey, testServer, ""); err == nil {
+		t.Fatal("expected error for mismatched cert/key, got nil")
+	}
+}
+
+func TestParseBundleUnknownVersion(t *testing.T) {
+	_, dir := testCA(t, "alice")
+	caPEM, certPEM, keyPEM := clientPEMs(t, dir, "alice")
+	data, err := MarshalBundle(caPEM, certPEM, keyPEM, testServer, "")
+	if err != nil {
+		t.Fatalf("MarshalBundle: %v", err)
+	}
+
+	var b Bundle
+	if err := json.Unmarshal(data, &b); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	b.Version = BundleVersion + 999
+	bumped, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := ParseBundle(bumped); err == nil {
+		t.Fatal("expected error for unknown bundle version, got nil")
+	}
+}
+
+func TestParseBundleMalformedJSON(t *testing.T) {
+	if _, err := ParseBundle([]byte("definitely not json")); err == nil {
+		t.Fatal("expected error for malformed JSON, got nil")
+	}
+}

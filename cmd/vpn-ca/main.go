@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/govpn/internal/ca"
+	"github.com/govpn/internal/profile"
 )
 
 const defaultDir = "./ca-data"
@@ -35,6 +37,8 @@ func main() {
 		err = cmdIssueClient(os.Args[2:])
 	case "list":
 		err = cmdList(os.Args[2:])
+	case "export-profile":
+		err = cmdExportProfile(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -57,6 +61,8 @@ Commands:
   issue-server [-dir DIR] -hosts host1,host2,1.2.3.4 [-cn N]  issue the server cert
   issue-client [-dir DIR] -name NAME                          issue a client cert
   list         [-dir DIR]                                     list issued clients
+  export-profile [-dir DIR] -name NAME -server HOST:PORT [-server-name S] [-out FILE]
+                                                              bundle a client into one .vpnio file
 
 Default -dir is ./ca-data.
 `)
@@ -146,6 +152,57 @@ func cmdList(args []string) error {
 	for _, c := range clients {
 		fmt.Printf("  - %s\n", c)
 	}
+	return nil
+}
+
+// cmdExportProfile bundles an already-issued client's credentials and the
+// server address into a single .vpnio file for easy distribution. It reads the
+// public CA cert and the client cert/key from disk — it does NOT touch the CA
+// private key, so it can run anywhere the issued client files are present.
+func cmdExportProfile(args []string) error {
+	fs := flag.NewFlagSet("export-profile", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir, "CA directory")
+	name := fs.String("name", "", "client name, already issued via issue-client (required)")
+	server := fs.String("server", "", "server address clients connect to, host:port (required)")
+	serverName := fs.String("server-name", "", "SNI / certificate verification host (optional; defaults to the server host)")
+	out := fs.String("out", "", "output file (default: <name>.vpnio)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("-name is required")
+	}
+	if *server == "" {
+		return fmt.Errorf("-server is required")
+	}
+
+	caPEM, err := os.ReadFile(filepath.Join(*dir, "ca.crt"))
+	if err != nil {
+		return fmt.Errorf("read CA certificate: %w", err)
+	}
+	certPEM, err := os.ReadFile(filepath.Join(*dir, "clients", *name+".crt"))
+	if err != nil {
+		return fmt.Errorf("read client certificate (issue it first: vpn-ca issue-client -name %s): %w", *name, err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(*dir, "clients", *name+".key"))
+	if err != nil {
+		return fmt.Errorf("read client key: %w", err)
+	}
+
+	data, err := profile.MarshalBundle(caPEM, certPEM, keyPEM, *server, *serverName)
+	if err != nil {
+		return fmt.Errorf("build profile bundle: %w", err)
+	}
+
+	outPath := *out
+	if outPath == "" {
+		outPath = *name + ".vpnio"
+	}
+	// The bundle carries the client private key — write it owner-only.
+	if err := os.WriteFile(outPath, data, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	fmt.Printf("Wrote profile %s (client %q, server %s)\n", outPath, *name, *server)
 	return nil
 }
 
