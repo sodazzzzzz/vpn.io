@@ -1,5 +1,5 @@
 import './style.css';
-import { Status, Disconnect, PickCredential, Connect, Reconnect, Profile } from '../wailsjs/go/main/App';
+import { Status, Disconnect, PickCredential, Connect, Reconnect, Profile, ImportProfileBundle } from '../wailsjs/go/main/App';
 import { WindowSetSize } from '../wailsjs/runtime/runtime';
 
 // Two screens in one popover: the main status view and the credential-import
@@ -44,6 +44,7 @@ const impServer = el('imp-server');
 const impSni = el('imp-sni');
 const impMtu = el('imp-mtu');
 const impTun = el('imp-tun');
+const impBundle = el('imp-bundle');
 const impSave = el('imp-save');
 const impCancel = el('imp-cancel');
 const impBack = el('imp-back');
@@ -274,6 +275,21 @@ async function pick(role) {
   }
 }
 
+// pickBundle imports a one-file .vpnio profile: the Go side opens the dialog,
+// validates it and stages it. On success (hasProfile=true) we drop back to the
+// main screen, now showing "Connect"; a cancel returns hasProfile=false.
+async function pickBundle() {
+  hideImportError();
+  try {
+    const info = await ImportProfileBundle();
+    if (!info.hasProfile) return; // cancelled — draft unchanged
+    showView('main');
+    poll();
+  } catch (e) {
+    showImportError(e);
+  }
+}
+
 async function openImport() {
   // Repopulate from the staged draft so reopening shows what's already set.
   try {
@@ -312,6 +328,7 @@ async function saveImport() {
 }
 
 function wireImport() {
+  impBundle.onclick = pickBundle;
   credEls.ca.row.onclick = () => pick('ca');
   credEls.cert.row.onclick = () => pick('cert');
   credEls.key.row.onclick = () => pick('key');

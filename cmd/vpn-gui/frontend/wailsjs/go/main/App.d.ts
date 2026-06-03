@@ -7,6 +7,8 @@ export function Connect(arg1:main.ConnectForm):Promise<control.Connected>;
 
 export function Disconnect():Promise<void>;
 
+export function ImportProfileBundle():Promise<main.ProfileInfo>;
+
 export function PickCredential(arg1:string):Promise<main.CredInfo>;
 
 export function Profile():Promise<main.ProfileInfo>;

@@ -10,6 +10,10 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function ImportProfileBundle() {
+  return window['go']['main']['App']['ImportProfileBundle']();
+}
+
 export function PickCredential(arg1) {
   return window['go']['main']['App']['PickCredential'](arg1);
 }

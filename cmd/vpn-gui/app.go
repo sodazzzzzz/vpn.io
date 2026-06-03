@@ -221,6 +221,72 @@ func (a *App) PickCredential(role string) (CredInfo, error) {
 	return CredInfo{Role: role, FileName: name, Loaded: true}, nil
 }
 
+// ImportProfileBundle opens a native file dialog for a one-file .vpnio profile,
+// validates it, and stages it as the current draft (server address + all three
+// credentials), persisting it so it survives a restart. The credential bytes
+// never cross to the webview. On success it returns the updated ProfileInfo
+// (HasProfile=true) so the UI can flip straight to "Connect". A cancelled dialog
+// returns a zero ProfileInfo (HasProfile=false) and leaves the draft untouched,
+// so the caller can tell "imported" from "cancelled" by HasProfile.
+func (a *App) ImportProfileBundle() (ProfileInfo, error) {
+	path, err := wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
+		Title: "Choose a profile file",
+		Filters: []wruntime.FileFilter{
+			{DisplayName: "vpn.io profile (*.vpnio)", Pattern: "*.vpnio"},
+			{DisplayName: "All files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ProfileInfo{}, fmt.Errorf("open file dialog: %w", err)
+	}
+	if path == "" {
+		return ProfileInfo{}, nil // cancelled — HasProfile=false signals "no import"
+	}
+
+	// A profile bundle is a few KiB of JSON; the single-credential cap applies
+	// (and the whole profile must fit one IPC frame to connect anyway).
+	if fi, err := os.Stat(path); err != nil {
+		return ProfileInfo{}, fmt.Errorf("stat file: %w", err)
+	} else if fi.Size() > maxCredentialFileBytes {
+		return ProfileInfo{}, fmt.Errorf("%s is too large for a profile — is this the right file?", filepath.Base(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ProfileInfo{}, fmt.Errorf("read file: %w", err)
+	}
+	return a.importBundleData(data, filepath.Base(path))
+}
+
+// importBundleData validates a .vpnio bundle and stages it as the draft. Split
+// out from the dialog so it can be tested without the Wails runtime.
+func (a *App) importBundleData(data []byte, sourceName string) (ProfileInfo, error) {
+	// ParseBundle runs the full credential validation (key/cert match, chains to
+	// the CA, in date, valid server address), so a bad bundle is rejected here
+	// rather than later at connect time.
+	p, err := profile.ParseBundle(data)
+	if err != nil {
+		return ProfileInfo{}, fmt.Errorf("invalid profile: %w", err)
+	}
+
+	a.mu.Lock()
+	a.caPEM, a.certPEM, a.keyPEM = p.CACertPEM, p.CertPEM, p.KeyPEM
+	// One file fills all three slots; show its name on each row.
+	a.caName, a.certName, a.keyName = sourceName, sourceName, sourceName
+	// Keep any advanced knobs (MTU / TUN name) the user already set — the bundle
+	// carries the identity and server address, not those — so an import doesn't
+	// silently wipe a customised MTU.
+	a.form = ConnectForm{Server: p.Server, ServerName: p.ServerName, MTU: a.form.MTU, TunName: a.form.TunName}
+	a.lastCN = p.CommonName
+	info := a.profileInfoLocked()
+	form := a.form
+	ca, cert, key := a.caPEM, a.certPEM, a.keyPEM
+	caN, certN, keyN := a.caName, a.certName, a.keyName
+	a.mu.Unlock()
+
+	a.save(form, ca, cert, key, caN, certN, keyN)
+	return info, nil
+}
+
 // Connect commits the form (server + options) into the draft, persists the
 // validated profile, and brings the tunnel up. It is what the import screen's
 // Save calls. Validation errors (bad address, key/cert mismatch, expired, wrong
@@ -325,6 +391,14 @@ func (a *App) connect(creds control.Credentials) (control.Connected, error) {
 func (a *App) Profile() ProfileInfo {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.profileInfoLocked()
+}
+
+// profileInfoLocked builds the draft summary for the UI. The caller must hold
+// a.mu — this lets a caller that just mutated the draft under the lock return a
+// consistent snapshot without dropping and reacquiring it (and racing a
+// concurrent Wails dispatch in the gap).
+func (a *App) profileInfoLocked() ProfileInfo {
 	return ProfileInfo{
 		HasProfile: a.form.Server != "" && len(a.caPEM) > 0 && len(a.certPEM) > 0 && len(a.keyPEM) > 0,
 		Server:     a.form.Server,
