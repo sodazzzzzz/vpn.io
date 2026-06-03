@@ -20,6 +20,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BIN="${1:-./vpn-server}"
+NAT_SETUP="$REPO_ROOT/scripts/setup-nat.sh"
+NAT_TEARDOWN="$REPO_ROOT/scripts/teardown-nat.sh"
 
 if [[ ! -x "$BIN" ]]; then
     echo "error: vpn-server binary not found at '$BIN'" >&2
@@ -28,12 +30,25 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
+# Validate the NAT scripts up front, before we write anything to the system:
+# they live in the repo's scripts/ dir, which the operator must copy to the VPS
+# alongside packaging/server/ (see docs/SERVER.md). Failing here keeps a partial
+# install (binary written, NAT helper missing) from happening.
+for f in "$NAT_SETUP" "$NAT_TEARDOWN"; do
+    if [[ ! -f "$f" ]]; then
+        echo "error: required script not found: $f" >&2
+        echo "copy the repo's scripts/ directory next to packaging/server/ (see docs/SERVER.md)" >&2
+        exit 1
+    fi
+done
+
 echo "* binary       -> /usr/local/bin/vpn-server"
 install -m 0755 "$BIN" /usr/local/bin/vpn-server
 
-echo "* setup-nat.sh -> /usr/local/lib/vpn-server/"
+echo "* nat scripts  -> /usr/local/lib/vpn-server/"
 install -d -m 0755 /usr/local/lib/vpn-server
-install -m 0755 "$REPO_ROOT/scripts/setup-nat.sh" /usr/local/lib/vpn-server/setup-nat.sh
+install -m 0755 "$NAT_SETUP"    /usr/local/lib/vpn-server/setup-nat.sh
+install -m 0755 "$NAT_TEARDOWN" /usr/local/lib/vpn-server/teardown-nat.sh
 
 echo "* config dir   -> /etc/vpn-server (0750)"
 install -d -m 0750 /etc/vpn-server
@@ -53,6 +68,8 @@ cat <<'NEXT'
 Installed. Next steps:
   1. Copy your CA-issued files into /etc/vpn-server/ (from the CA host):
          ca.crt  server.crt  server.key        (NOT ca.key)
+     Then lock down the private key so it isn't world-readable after the copy:
+         sudo chmod 0400 /etc/vpn-server/server.key
   2. Edit /etc/vpn-server/server.env — set VPN_WAN (find it: ip route get 1.1.1.1)
      and the subnet / push-routes / push-dns if the defaults don't fit.
   3. Open the listen port (default 8443/tcp) in your provider's firewall.

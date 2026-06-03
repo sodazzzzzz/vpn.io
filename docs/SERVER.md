@@ -62,6 +62,13 @@ Copy the three CA-issued files onto the VPS (NOT `ca.key`):
 /etc/vpn-server/server.key
 ```
 
+Then lock down the private key — after an `scp` it is often left world-readable
+(`0644`):
+
+```bash
+sudo chmod 0400 /etc/vpn-server/server.key
+```
+
 Edit `/etc/vpn-server/server.env`:
 
 - `VPN_WAN` — your public interface. Find it with `ip route get 1.1.1.1` (the
