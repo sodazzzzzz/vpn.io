@@ -432,3 +432,25 @@ func TestParseBundleMalformedJSON(t *testing.T) {
 		t.Fatal("expected error for malformed JSON, got nil")
 	}
 }
+
+func TestBundleStringRedactsKey(t *testing.T) {
+	_, dir := testCA(t, "alice")
+	caPEM, certPEM, keyPEM := clientPEMs(t, dir, "alice")
+	b := Bundle{
+		Version:   BundleVersion,
+		Server:    testServer,
+		CACertPEM: string(caPEM),
+		CertPEM:   string(certPEM),
+		KeyPEM:    string(keyPEM),
+	}
+	for _, s := range []string{
+		b.String(),
+		fmt.Sprintf("%v", b),
+		fmt.Sprintf("%s", b),
+		fmt.Sprintf("%#v", b),
+	} {
+		if strings.Contains(s, "-----BEGIN") {
+			t.Errorf("Bundle formatting leaked PEM material: %s", s)
+		}
+	}
+}

@@ -172,6 +172,11 @@ func cmdExportProfile(args []string) error {
 	if *name == "" {
 		return fmt.Errorf("-name is required")
 	}
+	// -name is used to build a file path under the CA dir; reject anything
+	// that could climb out of clients/ (e.g. "../server").
+	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
+		return fmt.Errorf("-name must be a plain client name (no path separators)")
+	}
 	if *server == "" {
 		return fmt.Errorf("-server is required")
 	}
@@ -198,8 +203,20 @@ func cmdExportProfile(args []string) error {
 	if outPath == "" {
 		outPath = *name + ".vpnio"
 	}
-	// The bundle carries the client private key — write it owner-only.
-	if err := os.WriteFile(outPath, data, 0o600); err != nil {
+	// The bundle carries the client private key. Remove any existing target and
+	// create it fresh with O_EXCL so the file is always 0600: os.WriteFile would
+	// leave a pre-existing file's looser mode untouched (perm applies only on
+	// creation), and this leaves no window where the key sits world-readable.
+	_ = os.Remove(outPath)
+	f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", outPath, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	fmt.Printf("Wrote profile %s (client %q, server %s)\n", outPath, *name, *server)

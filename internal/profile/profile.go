@@ -185,6 +185,18 @@ type Bundle struct {
 	KeyPEM     string `json:"key"`
 }
 
+// String renders a Bundle without its credential bytes so the private key
+// can't leak through fmt's %v/%s/%+v or a logger that stringifies values. The
+// receiver is a value (not a pointer) on purpose, mirroring Profile: use the
+// PEM fields directly when you actually need them. Marshal the Bundle (not
+// fmt it) to produce the .vpnio file.
+func (b Bundle) String() string {
+	return fmt.Sprintf("Bundle{Version:%d Server:%s ServerName:%s}", b.Version, b.Server, b.ServerName)
+}
+
+// GoString does the same for the %#v verb.
+func (b Bundle) GoString() string { return b.String() }
+
 // MarshalBundle validates the credentials (the same checks as LoadPEM, so a
 // written bundle is guaranteed importable) and returns the .vpnio JSON.
 func MarshalBundle(caPEM, certPEM, keyPEM []byte, server, serverName string) ([]byte, error) {
