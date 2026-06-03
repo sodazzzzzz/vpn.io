@@ -36,6 +36,12 @@ func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net
 	if log == nil {
 		log = slog.Default()
 	}
+	// The unix -allow-uid / -allow-gid policy has no effect here (the pipe's
+	// SDDL is the gate). Warn loudly so an operator who passes those flags isn't
+	// misled into thinking uid/gid filtering is active.
+	if len(policy.AllowUID) > 0 || len(policy.AllowGID) > 0 {
+		log.Warn("ipc: -allow-uid/-allow-gid are ignored on Windows; pipe access is governed by its security descriptor (SDDL)")
+	}
 	// NOTE: go-winio's ListenPipe does not expose FILE_FLAG_FIRST_PIPE_INSTANCE,
 	// so a second Listen on the same name silently creates another server
 	// instance instead of failing the way a second unix net.Listen would. A
