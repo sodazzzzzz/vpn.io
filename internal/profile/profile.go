@@ -14,6 +14,7 @@ package profile
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -164,4 +165,64 @@ func LoadPEM(caPEM, certPEM, keyPEM []byte, server, serverName string) (*Profile
 		CommonName: leaf.Subject.CommonName,
 		NotAfter:   leaf.NotAfter,
 	}, nil
+}
+
+// BundleVersion is the schema version written into every .vpnio bundle.
+// ParseBundle refuses a version it doesn't understand rather than guessing.
+const BundleVersion = 1
+
+// Bundle is the JSON form of a one-file client profile (".vpnio"): the CA
+// certificate, the client certificate and key, and the server address — every
+// input LoadPEM needs, packed into a single distributable file. The PEM fields
+// hold literal PEM text. A Bundle carries the client private key, so the file
+// is a secret (write it 0600).
+type Bundle struct {
+	Version    int    `json:"version"`
+	Server     string `json:"server"`
+	ServerName string `json:"serverName,omitempty"`
+	CACertPEM  string `json:"ca"`
+	CertPEM    string `json:"cert"`
+	KeyPEM     string `json:"key"`
+}
+
+// String renders a Bundle without its credential bytes so the private key
+// can't leak through fmt's %v/%s/%+v or a logger that stringifies values. The
+// receiver is a value (not a pointer) on purpose, mirroring Profile: use the
+// PEM fields directly when you actually need them. Marshal the Bundle (not
+// fmt it) to produce the .vpnio file.
+func (b Bundle) String() string {
+	return fmt.Sprintf("Bundle{Version:%d Server:%s ServerName:%s}", b.Version, b.Server, b.ServerName)
+}
+
+// GoString does the same for the %#v verb.
+func (b Bundle) GoString() string { return b.String() }
+
+// MarshalBundle validates the credentials (the same checks as LoadPEM, so a
+// written bundle is guaranteed importable) and returns the .vpnio JSON.
+func MarshalBundle(caPEM, certPEM, keyPEM []byte, server, serverName string) ([]byte, error) {
+	if _, err := LoadPEM(caPEM, certPEM, keyPEM, server, serverName); err != nil {
+		return nil, err
+	}
+	b := Bundle{
+		Version:    BundleVersion,
+		Server:     server,
+		ServerName: serverName,
+		CACertPEM:  string(caPEM),
+		CertPEM:    string(certPEM),
+		KeyPEM:     string(keyPEM),
+	}
+	return json.MarshalIndent(b, "", "  ")
+}
+
+// ParseBundle parses a .vpnio bundle and validates it into a Profile, applying
+// the same checks as Load. An unknown version is rejected up front.
+func ParseBundle(data []byte) (*Profile, error) {
+	var b Bundle
+	if err := json.Unmarshal(data, &b); err != nil {
+		return nil, fmt.Errorf("parse profile bundle: %w", err)
+	}
+	if b.Version != BundleVersion {
+		return nil, fmt.Errorf("unsupported profile bundle version %d (this build understands %d)", b.Version, BundleVersion)
+	}
+	return LoadPEM([]byte(b.CACertPEM), []byte(b.CertPEM), []byte(b.KeyPEM), b.Server, b.ServerName)
 }
