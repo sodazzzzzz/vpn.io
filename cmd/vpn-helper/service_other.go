@@ -13,7 +13,7 @@ import (
 
 func isService() bool { return false }
 
-func runService(string, func(context.Context) error) error {
+func runService(string, func(context.Context, func()) error) error {
 	return errors.New("running as a service is supported only on Windows")
 }
 

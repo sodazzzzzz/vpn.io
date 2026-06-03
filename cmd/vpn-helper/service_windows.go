@@ -24,10 +24,11 @@ func isService() bool {
 	return err == nil && is
 }
 
-// daemonService adapts the daemon's run function to svc.Handler.
+// daemonService adapts the daemon's run function to svc.Handler. run is given a
+// ready callback to invoke once its control endpoint is accepting.
 type daemonService struct {
 	name string
-	run  func(context.Context) error
+	run  func(context.Context, func()) error
 }
 
 // Execute is called by the SCM. It runs the daemon and maps a Stop/Shutdown
@@ -58,12 +59,26 @@ func (s *daemonService) Execute(_ []string, r <-chan svc.ChangeRequest, status c
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ready := make(chan struct{})
 	done := make(chan error, 1)
-	go func() { done <- s.run(ctx) }()
+	go func() { done <- s.run(ctx, func() { close(ready) }) }()
 
+	// Report Running only once the control endpoint is actually accepting, or
+	// fail fast if the daemon errors before that (e.g. the pipe is busy or
+	// Wintun is missing) — don't flap through Running on a doomed start-up.
 	const accepted = svc.AcceptStop | svc.AcceptShutdown
-	status <- svc.Status{State: svc.Running, Accepts: accepted}
-	logInfo("vpn-helper service started")
+	select {
+	case <-ready:
+		status <- svc.Status{State: svc.Running, Accepts: accepted}
+		logInfo("vpn-helper service started")
+	case err := <-done:
+		status <- svc.Status{State: svc.StopPending}
+		if err != nil {
+			logErr("vpn-helper failed to start: " + err.Error())
+			return true, 1
+		}
+		return false, 0
+	}
 
 	for {
 		select {
@@ -98,7 +113,7 @@ func (s *daemonService) Execute(_ []string, r <-chan svc.ChangeRequest, status c
 }
 
 // runService runs the daemon under the Service Control Manager.
-func runService(name string, run func(context.Context) error) error {
+func runService(name string, run func(context.Context, func()) error) error {
 	return svc.Run(name, &daemonService{name: name, run: run})
 }
 

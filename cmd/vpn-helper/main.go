@@ -82,8 +82,12 @@ func main() {
 	}
 	policy := ipc.Policy{AllowUID: uids, AllowGID: gids}
 
-	run := func(ctx context.Context) error {
-		return runDaemon(ctx, *socket, mode, policy, log)
+	// ready is invoked once the control endpoint is actually accepting, so the
+	// Windows-service path reports Running only then — a client that connects on
+	// the SCM's "Running" would otherwise not find the pipe yet. The console
+	// path passes a no-op.
+	run := func(ctx context.Context, ready func()) error {
+		return runDaemon(ctx, *socket, mode, policy, log, ready)
 	}
 
 	// When started by the Windows Service Control Manager, run under it so it can
@@ -94,19 +98,22 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	exitOnErr(run(ctx))
+	exitOnErr(run(ctx, func() {}))
 }
 
 // runDaemon brings up the control endpoint and serves Connect/Disconnect/Status
 // until ctx is cancelled, then tears the tunnel down. Shared by the console and
 // Windows-service entry points.
-func runDaemon(ctx context.Context, socket string, mode os.FileMode, policy ipc.Policy, log *slog.Logger) error {
+func runDaemon(ctx context.Context, socket string, mode os.FileMode, policy ipc.Policy, log *slog.Logger, ready func()) error {
 	ln, err := ipc.Listen(socket, mode, policy, log)
 	if err != nil {
 		return err
 	}
 	log.Info("vpn-helper listening", "socket", socket, "mode", fmt.Sprintf("%#o", mode),
 		"allow_uid", policy.AllowUID, "allow_gid", policy.AllowGID)
+	// The endpoint is bound and dialable now — signal readiness (the service
+	// path reports Running here, not before).
+	ready()
 
 	ctrl := helper.New(log)
 	srv := ipc.NewServer(ln, ctrl, log)
