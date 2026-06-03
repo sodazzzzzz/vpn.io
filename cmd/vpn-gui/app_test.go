@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/govpn/internal/ca"
+	"github.com/govpn/internal/profile"
 	"github.com/govpn/internal/profilestore"
 )
 
@@ -73,5 +76,54 @@ func TestConnectInvalidFormKeepsDraft(t *testing.T) {
 	}
 	if got := a.Profile().Server; got != "vpn.example.com:8443" {
 		t.Errorf("draft server clobbered after a failed Connect: got %q, want vpn.example.com:8443", got)
+	}
+}
+
+// TestImportBundleStagesProfile verifies that importing a valid .vpnio stages a
+// complete, connect-ready draft, and that a malformed bundle is rejected.
+func TestImportBundleStagesProfile(t *testing.T) {
+	t.Setenv("VPN_IO_PROFILE", filepath.Join(t.TempDir(), "profile.json"))
+
+	// Build a real bundle from a fresh CA.
+	caDir := t.TempDir()
+	c, err := ca.Create(caDir, "test-ca")
+	if err != nil {
+		t.Fatalf("ca.Create: %v", err)
+	}
+	if err := c.IssueClient("laptop"); err != nil {
+		t.Fatalf("IssueClient: %v", err)
+	}
+	caPEM, _ := os.ReadFile(filepath.Join(caDir, "ca.crt"))
+	certPEM, _ := os.ReadFile(filepath.Join(caDir, "clients", "laptop.crt"))
+	keyPEM, _ := os.ReadFile(filepath.Join(caDir, "clients", "laptop.key"))
+	bundle, err := profile.MarshalBundle(caPEM, certPEM, keyPEM, "vpn.example.com:8443", "")
+	if err != nil {
+		t.Fatalf("MarshalBundle: %v", err)
+	}
+
+	a := NewApp()
+	info, err := a.importBundleData(bundle, "laptop.vpnio")
+	if err != nil {
+		t.Fatalf("importBundleData: %v", err)
+	}
+	if !info.HasProfile {
+		t.Error("HasProfile = false, want true after import")
+	}
+	if info.Server != "vpn.example.com:8443" {
+		t.Errorf("Server = %q, want vpn.example.com:8443", info.Server)
+	}
+	if info.CommonName != "laptop" {
+		t.Errorf("CommonName = %q, want laptop", info.CommonName)
+	}
+	if !info.CA.Loaded || !info.Cert.Loaded || !info.Key.Loaded {
+		t.Errorf("not all credential slots loaded: %+v", info)
+	}
+	if info.CA.FileName != "laptop.vpnio" {
+		t.Errorf("CA.FileName = %q, want laptop.vpnio", info.CA.FileName)
+	}
+
+	// A malformed bundle is rejected.
+	if _, err := a.importBundleData([]byte("not a bundle"), "x.vpnio"); err == nil {
+		t.Error("expected error for a malformed bundle")
 	}
 }
