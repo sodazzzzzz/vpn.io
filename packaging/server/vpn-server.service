@@ -19,6 +19,7 @@ ExecStartPre=/usr/local/lib/vpn-server/setup-nat.sh ${VPN_SUBNET} ${VPN_WAN}
 ExecStart=/usr/local/bin/vpn-server \
     -listen ${VPN_LISTEN} \
     -ca ${VPN_CA} -cert ${VPN_CERT} -key ${VPN_KEY} \
+    -revoked=${VPN_REVOKED} \
     -subnet ${VPN_SUBNET} -gateway ${VPN_GATEWAY} \
     -push-routes ${VPN_PUSH_ROUTES} -push-dns ${VPN_PUSH_DNS} \
     -log-level info

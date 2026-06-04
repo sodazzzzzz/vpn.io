@@ -28,6 +28,7 @@ func main() {
 		caFile    = flag.String("ca", "ca-data/ca.crt", "CA certificate (clients must be signed by this)")
 		certFile  = flag.String("cert", "ca-data/server/server.crt", "server certificate")
 		keyFile   = flag.String("key", "ca-data/server/server.key", "server private key")
+		revoked   = flag.String("revoked", "", "deny-list of revoked client serials (vpn-ca revoke writes it; hot-reloaded; empty = off)")
 		subnet    = flag.String("subnet", "10.8.0.0/24", "tunnel subnet")
 		gateway   = flag.String("gateway", "10.8.0.1", "server's tunnel IP (gateway for clients)")
 		netmask   = flag.String("netmask", "255.255.255.0", "tunnel netmask")
@@ -53,6 +54,7 @@ func main() {
 		CACertFile:       *caFile,
 		CertFile:         *certFile,
 		KeyFile:          *keyFile,
+		RevokedFile:      *revoked,
 		Subnet:           *subnet,
 		Gateway:          *gateway,
 		Netmask:          *netmask,
