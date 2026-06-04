@@ -1,0 +1,53 @@
+name: desktop-macos
+
+# Builds the macOS desktop GUI + helper and packages them into a .pkg installer.
+# The .pkg installs the app and registers the privileged helper LaunchDaemon and
+# starts it — so it's the artifact to test on a real Mac (and to hand to users),
+# unlike the .dmg which only drops the .app.
+
+on:
+  push:
+    branches: [main, 'macos-**', 'feat/macos-**']
+  pull_request:
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/ipc/**'
+      - 'internal/tun/**'
+      - 'packaging/macos/**'
+      - '.github/workflows/desktop-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-pkg:
+    name: build .pkg (darwin/universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: build .pkg
+        run: VERSION="0.0.0-ci.${{ github.run_number }}" packaging/macos/build-pkg.sh
+
+      - name: show output
+        run: ls -lh dist/*.pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-io-macos-pkg
+          path: dist/vpn.io.pkg
+          if-no-files-found: error
