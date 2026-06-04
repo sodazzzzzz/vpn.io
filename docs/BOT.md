@@ -149,16 +149,22 @@ buttons to download the app for their OS). The token is **single-use** —
 redeeming it again is rejected. In the app they choose **“Import a profile
 file”** and pick the file.
 
-### Or mint tokens from the bot (`-owner`)
+### Or manage clients from the bot (`-owner`)
 
-With `-owner <your-telegram-id>` set, you can mint tokens by messaging the bot —
-no SSH:
+With `-owner <your-telegram-id>` set, you can manage clients by messaging the
+bot — no SSH. In a **private** chat with the bot:
 
-- Send **`/whoami`** to the bot once to learn your Telegram ID; set it as
-  `-owner` and restart the bot.
-- Send **`/invite alice`** → the bot replies with a single-use token for `alice`.
+- **`/whoami`** → your Telegram ID (set it as `-owner` and restart the bot).
+- **`/invite alice`** → a single-use token for `alice`.
+- **`/revoke alice`** → cut alice off (the server drops her on her next
+  connection — see [SERVER.md](SERVER.md) for `-revoked`).
+- **`/unrevoke alice`** → undo a revoke.
+- **`/revoked`** → list revoked clients.
 
-`/invite` works only for that one ID; everyone else's is ignored.
+These work only for that one Telegram ID and only in a private chat (a token or
+client list is never printed into a group); everyone else just gets the
+greeting. Revocations land in the same `revoked.json` the server enforces, so
+point the server's `-revoked` at the CA directory's `revoked.json`.
 
 ## Notes
 
