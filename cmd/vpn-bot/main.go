@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -150,11 +151,17 @@ func cmdServe(args []string) error {
 	store := invite.New(*storePath)
 	log.Printf("vpn-bot online as @%s", bot.Self.UserName)
 
-	// Stop cleanly on SIGTERM / Interrupt (systemd stop). Updates are processed
-	// one at a time, so an in-flight onboarding finishes before we exit — no
-	// half-issued client left behind.
+	// Stop cleanly on SIGTERM / Interrupt (systemd stop). Messages are handled
+	// inline (one at a time), so an in-flight onboarding finishes before we exit.
+	// Installer uploads run in background goroutines tracked by wg, so shutdown
+	// waits for them — cutting one off would hand the user a truncated file.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	var wg sync.WaitGroup
+	// Cap concurrent installer uploads so repeated button taps can't spawn an
+	// unbounded number of multi-MB transfers.
+	sendSem := make(chan struct{}, 4)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -164,17 +171,26 @@ func cmdServe(args []string) error {
 		case <-ctx.Done():
 			bot.StopReceivingUpdates()
 			log.Print("vpn-bot shutting down")
+			wg.Wait()
 			return nil
 		case update, ok := <-updates:
 			if !ok {
+				wg.Wait()
 				return nil
 			}
 			if update.CallbackQuery != nil {
 				// Uploading an installer (tens of MB) can take many seconds; run
 				// it off the main loop so other users' updates and a SIGTERM
-				// shutdown aren't blocked behind it.
+				// shutdown aren't blocked behind it. wg + sendSem bound and track
+				// these uploads.
 				cq := update.CallbackQuery
-				go handleCallback(bot, cq, *installersDir)
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					sendSem <- struct{}{} // acquire a slot (off the main loop)
+					defer func() { <-sendSem }()
+					handleCallback(bot, cq, *installersDir)
+				}()
 				continue
 			}
 			if update.Message == nil || update.Message.From == nil {
@@ -347,7 +363,7 @@ func handleCallback(bot *tgbotapi.BotAPI, cq *tgbotapi.CallbackQuery, installers
 	doc := tgbotapi.NewDocument(cq.Message.Chat.ID, tgbotapi.FilePath(path))
 	doc.Caption = sel.hint
 	if _, err := bot.Send(doc); err != nil {
-		log.Printf("send %s installer to %s: %v", sel.key, userLabel(cq.From), err)
+		log.Printf("send %s installer to chat %d: %v", sel.key, cq.Message.Chat.ID, err)
 		reply(bot, cq.Message.Chat.ID, "Couldn't send the "+sel.label+" installer — please contact the owner.")
 	}
 }
