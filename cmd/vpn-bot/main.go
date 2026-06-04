@@ -170,7 +170,11 @@ func cmdServe(args []string) error {
 				return nil
 			}
 			if update.CallbackQuery != nil {
-				handleCallback(bot, update.CallbackQuery, *installersDir)
+				// Uploading an installer (tens of MB) can take many seconds; run
+				// it off the main loop so other users' updates and a SIGTERM
+				// shutdown aren't blocked behind it.
+				cq := update.CallbackQuery
+				go handleCallback(bot, cq, *installersDir)
 				continue
 			}
 			if update.Message == nil || update.Message.From == nil {
@@ -319,6 +323,9 @@ func handleCallback(bot *tgbotapi.BotAPI, cq *tgbotapi.CallbackQuery, installers
 		log.Printf("answer callback: %v", err)
 	}
 	if cq.Message == nil || installersDir == "" {
+		return
+	}
+	if !strings.HasPrefix(cq.Data, "install:") {
 		return
 	}
 	key := strings.TrimPrefix(cq.Data, "install:")
