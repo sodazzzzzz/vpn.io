@@ -76,10 +76,13 @@ Commands:
   token -name NAME [-store FILE]
         generate a one-time invite token for a client and print it
 
-  serve -telegram-token TOKEN -dir CA_DIR -server HOST:PORT [-server-name S] [-store FILE] [-installers DIR]
+  serve -telegram-token TOKEN -dir CA_DIR -server HOST:PORT [-server-name S] [-store FILE] [-installers DIR] [-owner ID]
         run the bot: redeem invite tokens and deliver .vpnio profiles.
         With -installers DIR, also offer the app installer for the user's OS
         (*.exe / *.pkg / *.deb found in DIR) via inline buttons.
+        With -owner ID, that Telegram user can mint tokens in-chat with
+        "/invite <name>" instead of this CLI. Anyone can "/whoami" to learn
+        their own ID.
 
 Defaults: -dir ./ca-data, -store ./invite-tokens.json
 `)
@@ -92,17 +95,32 @@ func cmdToken(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *name == "" {
-		return fmt.Errorf("-name is required")
-	}
-	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
-		return fmt.Errorf("-name must be a plain client name (no path separators)")
+	if err := validateClientName(*name); err != nil {
+		return fmt.Errorf("-name: %w", err)
 	}
 	tok, err := invite.New(*storePath).Generate(*name)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Invite token for %q:\n\n  %s\n\nSend it to the person; they message it to the bot to receive their profile.\n", *name, tok.Value)
+	return nil
+}
+
+// validateClientName rejects names that aren't a plain, filesystem-safe client
+// identifier. The CA writes <name>.crt/.key, so a path separator would escape
+// the directory and an over-long name would break os.WriteFile (NAME_MAX 255).
+// Because a redeemed token is spent before the cert is issued, a name that only
+// fails at issue time would burn the token — so reject it up front. Shared by
+// the `token` command and `/invite`.
+func validateClientName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("name is required")
+	case len(name) > 64:
+		return fmt.Errorf("name too long (max 64 characters)")
+	case strings.ContainsAny(name, `/\`) || name == "." || name == "..":
+		return fmt.Errorf("name must be plain — no path separators")
+	}
 	return nil
 }
 
@@ -114,6 +132,7 @@ func cmdServe(args []string) error {
 	serverName := fs.String("server-name", "", "SNI / certificate verification host (optional)")
 	storePath := fs.String("store", defaultStore, "invite token store file")
 	installersDir := fs.String("installers", "", "directory with app installers (*.exe/*.pkg/*.deb) to offer after the profile; empty disables")
+	ownerID := fs.Int64("owner", 0, "Telegram user ID allowed to mint tokens with /invite (0 disables; send /whoami to the bot to find yours)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -203,7 +222,7 @@ func cmdServe(args []string) error {
 			if update.Message == nil || update.Message.From == nil {
 				continue
 			}
-			handleMessage(bot, store, authority, update.Message, *server, *serverName, *installersDir)
+			handleMessage(bot, store, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
 		}
 	}
 }
@@ -211,13 +230,31 @@ func cmdServe(args []string) error {
 const helpText = "Send me your one-time invite token and I'll send back your vpn.io profile (.vpnio). " +
 	"Ask the owner for a token if you don't have one."
 
-func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string) {
+func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
 	}
-	if text == "/start" || text == "/help" {
+	// Telegram commands — msg.Command() strips the leading slash and any
+	// @BotName suffix (group chats), so parsing is robust there too.
+	switch msg.Command() {
+	case "start", "help":
 		reply(bot, msg.Chat.ID, helpText)
+		return
+	case "whoami":
+		// Not secret, and how the owner discovers the value to pass as -owner.
+		reply(bot, msg.Chat.ID, fmt.Sprintf("Your Telegram ID is %d.", msg.From.ID))
+		return
+	case "invite":
+		// A token is a credential: mint it only for the owner, and only in a
+		// private chat. Every other case (non-owner, or even the owner in a
+		// group) just gets the greeting — that neither prints a token nor
+		// reveals to a group who the owner is.
+		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
+			handleInvite(bot, store, msg)
+		} else {
+			reply(bot, msg.Chat.ID, helpText)
+		}
 		return
 	}
 	if len(text) > maxTokenLen {
@@ -269,6 +306,25 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 			}
 		}
 	}
+}
+
+// handleInvite mints a one-time token from an owner's "/invite <name>" and
+// replies with it. The caller has already verified the sender is the owner.
+func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message) {
+	name := strings.TrimSpace(msg.CommandArguments())
+	if err := validateClientName(name); err != nil {
+		reply(bot, msg.Chat.ID, "Can't use that name ("+err.Error()+"). Usage: /invite <client-name>")
+		return
+	}
+	tok, err := store.Generate(name)
+	if err != nil {
+		log.Printf("/invite generate %q: %v", name, err)
+		reply(bot, msg.Chat.ID, "Couldn't generate a token — check the logs.")
+		return
+	}
+	// Audit: a minted token is a credential, like an issued profile.
+	log.Printf("minted invite token for %q via /invite from %s", name, userLabel(msg.From))
+	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, tok.Value))
 }
 
 // userLabel is a human-ish audit string for a Telegram user. UserName is

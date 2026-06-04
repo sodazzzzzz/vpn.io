@@ -78,7 +78,10 @@ ExecStart=/usr/local/bin/vpn-bot serve \
     -dir /etc/vpn-bot/ca-data \
     -server 203.0.113.5:8443 \
     -store /etc/vpn-bot/invite-tokens.json \
-    -installers /etc/vpn-bot/installers
+    -installers /etc/vpn-bot/installers \
+    -owner 123456789
+# -owner is optional: that Telegram user ID can mint tokens with /invite
+# (send /whoami to the bot to learn yours). Drop the line to disable.
 Restart=on-failure
 RestartSec=3
 
@@ -145,6 +148,17 @@ bot, send the token, and get back `alice.vpnio` (plus, if you set `-installers`,
 buttons to download the app for their OS). The token is **single-use** —
 redeeming it again is rejected. In the app they choose **“Import a profile
 file”** and pick the file.
+
+### Or mint tokens from the bot (`-owner`)
+
+With `-owner <your-telegram-id>` set, you can mint tokens by messaging the bot —
+no SSH:
+
+- Send **`/whoami`** to the bot once to learn your Telegram ID; set it as
+  `-owner` and restart the bot.
+- Send **`/invite alice`** → the bot replies with a single-use token for `alice`.
+
+`/invite` works only for that one ID; everyone else's is ignored.
 
 ## Notes
 
