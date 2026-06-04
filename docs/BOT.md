@@ -176,5 +176,7 @@ want that).
 - The token is 128-bit random and single-use; brute-forcing it is infeasible and
   Telegram rate-limits bots, so no extra throttling is configured.
 - The bot processes requests one at a time — fine for a personal deployment.
-- Revocation isn't built yet: to cut off a client, re-issue the CA or (future)
-  add a deny-list.
+- To cut off a client, use `/revoke <name>` (owner-only) or `vpn-ca revoke`, and
+  point the server's `-revoked` at the same `revoked.json` — see "manage clients
+  from the bot" above and [SERVER.md](SERVER.md).
+- A ready-to-edit unit file lives at `packaging/server/vpn-bot.service`.
