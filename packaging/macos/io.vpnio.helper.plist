@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchDaemon for the .pkg installer (packaging/macos/build-pkg.sh).
+
+     This differs from packaging/launchd/io.vpnio.helper.plist (the manual,
+     root-only dev install): here the control socket is world-readable (0666)
+     and the desktop user is authorised by uid, so the unprivileged GUI can
+     drive the helper without a relogin. The socket mode only opens the file;
+     the daemon still rejects any peer whose uid is not -allow-uid (verified
+     from the kernel via LOCAL_PEERCRED). The installer's postinstall replaces
+     __ALLOW_UID__ with the console user's uid (or 0 = root-only if unknown). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.vpnio.helper</string>
+
+	<!-- Runs as root (LaunchDaemon): the helper creates the TUN device and
+	     edits routes/firewall/DNS. -allow-uid admits the desktop user. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/vpn-helper</string>
+		<string>-socket</string>
+		<string>/var/run/vpn-io-helper.sock</string>
+		<string>-socket-mode</string>
+		<string>0666</string>
+		<string>-allow-uid</string>
+		<string>__ALLOW_UID__</string>
+		<string>-log-level</string>
+		<string>info</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Restart on crash, but not after a clean exit (a manual bootout). -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/var/log/vpn-io-helper.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/vpn-io-helper.log</string>
+</dict>
+</plist>
