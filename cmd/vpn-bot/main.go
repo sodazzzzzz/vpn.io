@@ -220,20 +220,24 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 	if text == "" {
 		return
 	}
-	if text == "/start" || text == "/help" {
+	// Telegram commands — msg.Command() strips the leading slash and any
+	// @BotName suffix (group chats), so parsing is robust there too.
+	switch msg.Command() {
+	case "start", "help":
 		reply(bot, msg.Chat.ID, helpText)
 		return
-	}
-	// /whoami reports the caller's own Telegram ID — not secret, and how the
-	// owner discovers the value to pass as -owner.
-	if text == "/whoami" {
+	case "whoami":
+		// Not secret, and how the owner discovers the value to pass as -owner.
 		reply(bot, msg.Chat.ID, fmt.Sprintf("Your Telegram ID is %d.", msg.From.ID))
 		return
-	}
-	// /invite mints a token, but only for the configured owner. Anyone else
-	// falls through (we don't advertise the command).
-	if strings.HasPrefix(text, "/invite") && ownerID != 0 && msg.From.ID == ownerID {
-		handleInvite(bot, store, msg)
+	case "invite":
+		// Only the configured owner mints tokens; anyone else just gets the
+		// greeting (we don't advertise the command).
+		if ownerID != 0 && msg.From.ID == ownerID {
+			handleInvite(bot, store, msg)
+		} else {
+			reply(bot, msg.Chat.ID, helpText)
+		}
 		return
 	}
 	if len(text) > maxTokenLen {
@@ -290,7 +294,7 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 // handleInvite mints a one-time token from an owner's "/invite <name>" and
 // replies with it. The caller has already verified the sender is the owner.
 func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message) {
-	name := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/invite"))
+	name := strings.TrimSpace(msg.CommandArguments())
 	if name == "" {
 		reply(bot, msg.Chat.ID, "Usage: /invite <client-name>")
 		return
@@ -305,6 +309,8 @@ func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Messa
 		reply(bot, msg.Chat.ID, "Couldn't generate a token — check the logs.")
 		return
 	}
+	// Audit: a minted token is a credential, like an issued profile.
+	log.Printf("minted invite token for %q via /invite from %s", name, userLabel(msg.From))
 	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, tok.Value))
 }
 
