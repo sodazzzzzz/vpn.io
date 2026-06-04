@@ -52,7 +52,7 @@ jobs:
       - name: build helper daemon
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          go build -trimpath -o dist/vpn-helper.exe ./cmd/vpn-helper
+          go build -trimpath -ldflags="-s -w" -o dist/vpn-helper.exe ./cmd/vpn-helper
           # The installer bundles the helper next to project.nsi as ..\vpn-helper.exe.
           Copy-Item dist/vpn-helper.exe cmd/vpn-gui/build/windows/vpn-helper.exe
 

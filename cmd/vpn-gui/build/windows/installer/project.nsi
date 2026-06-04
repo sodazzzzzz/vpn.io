@@ -147,7 +147,10 @@ Section "uninstall"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
-    RMDir /r $INSTDIR
+    # /REBOOTOK: if the helper binary is still locked (e.g. the service couldn't
+    # be stopped above), schedule the leftover files for removal on reboot and
+    # let NSIS prompt for it — rather than silently leaving $INSTDIR behind.
+    RMDir /r /REBOOTOK $INSTDIR
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
