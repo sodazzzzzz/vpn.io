@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs as root before the new payload is written.
+#
+# Upgrade path: a previous install leaves the helper running, which holds the
+# binary at /usr/local/bin/vpn-helper open. Stop and unload the old daemon so
+# pkgbuild can overwrite the binary and the postinstall can bootstrap the new
+# one cleanly. No-op on a first install (no plist yet).
+set -eu
+
+LABEL=io.vpnio.helper
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+
+if [ -f "$PLIST" ]; then
+	launchctl bootout "system/${LABEL}" 2>/dev/null || true
+fi
+
+exit 0
