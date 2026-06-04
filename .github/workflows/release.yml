@@ -1,0 +1,143 @@
+name: release
+
+# Cuts a GitHub Release when a vX.Y.Z tag is pushed: builds the Linux server +
+# bot + CA binaries and both desktop installers, then attaches them (plus a
+# SHA256SUMS) to the release. The VPS pulls these with packaging/server/vpn-update.sh.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  server-bot:
+    name: build server + bot (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build linux binaries
+        run: |
+          mkdir -p out
+          for cmd in vpn-server vpn-bot vpn-ca; do
+            GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "out/$cmd" "./cmd/$cmd"
+          done
+          ls -lh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-bot
+          path: out/*
+          if-no-files-found: error
+
+  windows:
+    name: build installer (windows/amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: ensure NSIS on PATH
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          $nsis = "C:\Program Files (x86)\NSIS"
+          if (Test-Path $nsis) { Add-Content -Path $env:GITHUB_PATH -Value $nsis }
+      - name: build helper daemon
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -ldflags="-s -w" -o dist/vpn-helper.exe ./cmd/vpn-helper
+          Copy-Item dist/vpn-helper.exe cmd/vpn-gui/build/windows/vpn-helper.exe
+      - name: fetch and verify Wintun driver
+        working-directory: cmd/vpn-gui/build/windows
+        run: |
+          $url  = "https://www.wintun.net/builds/wintun-0.14.1.zip"
+          $want = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51" # wintun.net, v0.14.1
+          Invoke-WebRequest -Uri $url -OutFile wintun.zip
+          $got = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $want) { Write-Error "Wintun checksum mismatch: got $got, want $want"; exit 1 }
+          Expand-Archive -Path wintun.zip -DestinationPath wintun-tmp -Force
+          Copy-Item wintun-tmp/wintun/bin/amd64/wintun.dll -Destination wintun.dll
+          Remove-Item wintun.zip
+          Remove-Item -Recurse wintun-tmp
+      - name: build GUI + installer
+        working-directory: cmd/vpn-gui
+        run: wails build -nsis
+      - name: name the installer
+        working-directory: cmd/vpn-gui/build/bin
+        run: |
+          $inst = Get-ChildItem *-amd64-installer.exe | Select-Object -First 1
+          if (-not $inst) { Write-Error "installer .exe not found in build/bin"; exit 1 }
+          Copy-Item $inst.FullName vpn-io-setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: cmd/vpn-gui/build/bin/vpn-io-setup.exe
+          if-no-files-found: error
+
+  macos:
+    name: build installer (darwin/universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: build .pkg
+        run: VERSION="${GITHUB_REF_NAME#v}" packaging/macos/build-pkg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkg
+          path: dist/vpn.io.pkg
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: [server-bot, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: stage assets + checksums
+        run: |
+          mkdir -p rel
+          cp artifacts/server-bot/vpn-server      rel/
+          cp artifacts/server-bot/vpn-bot         rel/
+          cp artifacts/server-bot/vpn-ca          rel/
+          cp artifacts/windows-installer/vpn-io-setup.exe rel/
+          cp artifacts/macos-pkg/vpn.io.pkg       rel/
+          chmod +x rel/vpn-server rel/vpn-bot rel/vpn-ca
+          ( cd rel && sha256sum * > SHA256SUMS )
+          ls -lh rel
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            rel/*
