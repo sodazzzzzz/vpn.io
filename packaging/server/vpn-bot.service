@@ -1,0 +1,41 @@
+[Unit]
+Description=vpn.io Telegram onboarding bot
+Documentation=https://github.com/sodazzzzzz/vpn.io/blob/main/docs/BOT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vpn-bot
+Group=vpn-bot
+WorkingDirectory=/etc/vpn-bot
+# TELEGRAM_TOKEN is read from this file (0600) so it never lands in argv / `ps`.
+EnvironmentFile=/etc/vpn-bot/bot.env
+# -server must match the address clients connect to (the server certificate's
+# -hosts SAN). Replace 203.0.113.5:8443 with your server's address.
+# -owner <your-telegram-id> (optional) enables /invite, /revoke, /unrevoke and
+# /revoked in a private chat with the bot — send /whoami to learn your ID, then
+# add the flag here and restart.
+ExecStart=/usr/local/bin/vpn-bot serve \
+    -dir /etc/vpn-bot/ca-data \
+    -server 203.0.113.5:8443 \
+    -store /etc/vpn-bot/invite-tokens.json \
+    -installers /etc/vpn-bot/installers
+Restart=on-failure
+RestartSec=3
+
+# Hardening — the bot only reads the CA directory and makes outbound calls to
+# Telegram; it listens on no port.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/vpn-bot
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+
+[Install]
+WantedBy=multi-user.target
