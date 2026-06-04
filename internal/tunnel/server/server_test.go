@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/govpn/internal/ca"
+	"github.com/govpn/internal/revoke"
 	"github.com/govpn/internal/tunnel"
 )
 
@@ -294,6 +295,46 @@ func TestServer_RejectsCertFromOtherCA(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("server accepted a connection with a cert from an unknown CA")
+	}
+}
+
+func TestServer_RejectsRevokedClient(t *testing.T) {
+	revokedFile := filepath.Join(t.TempDir(), "revoked.json")
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.RevokedFile = revokedFile })
+	defer h.shutdown()
+
+	cert := h.issueClient("alice")
+
+	// Before revocation alice connects fine.
+	conn, err := h.dial([]tls.Certificate{cert})
+	if err != nil {
+		t.Fatalf("alice should connect before revocation: %v", err)
+	}
+	_ = conn.Close()
+
+	// Revoke alice's serial; the server hot-reloads the deny-list on the next
+	// connection (the file did not exist a moment ago).
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse alice cert: %v", err)
+	}
+	if _, err := revoke.New(revokedFile).Add(leaf.SerialNumber, "alice"); err != nil {
+		t.Fatalf("revoke alice: %v", err)
+	}
+
+	// Now alice is rejected. In TLS 1.3 the client finishes its half of the
+	// handshake before the server rejects its certificate, so the dial may
+	// succeed and the rejection surfaces on the first read (as in the rogue-CA
+	// test above).
+	conn, err = h.dial([]tls.Certificate{cert})
+	if err == nil {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err = tunnel.ReadPacket(conn)
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("revoked alice was accepted, but should be rejected")
 	}
 }
 

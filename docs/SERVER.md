@@ -94,6 +94,26 @@ plus the server address (`vpn.example.com:8443`), and connect.
 
 ---
 
+## Revoking a client
+
+To cut off a client (lost device, removed person), revoke its certificate on
+the CA host:
+
+```sh
+vpn-ca revoke -name mylaptop      # add it to ca-data/revoked.json
+vpn-ca list                       # shows a "Revoked:" section
+vpn-ca unrevoke -name mylaptop    # undo, if needed
+```
+
+Point the server at that deny-list so it enforces it — set `VPN_REVOKED` in
+`server.env` to the `revoked.json` path (e.g. `/etc/vpn-server/revoked.json`,
+or the `revoked.json` in your CA directory) and `systemctl restart vpn-server`
+once. After that the server **hot-reloads** the file: each `vpn-ca revoke` takes
+effect on the client's next connection, no restart needed. Revocation is by
+certificate serial, so re-issuing the same name later is not affected.
+
+---
+
 ## Troubleshooting
 
 - **Service won't start** → `journalctl -u vpn-server -e`. "interface not found"

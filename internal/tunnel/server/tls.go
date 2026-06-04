@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+
+	"github.com/govpn/internal/revoke"
 )
 
 // loadTLSConfig builds a *tls.Config that:
@@ -14,7 +16,9 @@ import (
 //   - verifies the client's ExtKeyUsage includes ClientAuth (the standard
 //     verifier already does this; we add an explicit VerifyPeerCertificate
 //     hook for defense-in-depth and to surface clearer errors)
-func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile string) (*tls.Config, error) {
+//   - rejects revoked client certificates (deny-list by serial in revokedFile,
+//     hot-reloaded; empty path disables the check)
+func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string) (*tls.Config, error) {
 	caPEM, err := os.ReadFile(caCertFile)
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert %q: %w", caCertFile, err)
@@ -28,6 +32,8 @@ func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile string) (*tls.Confi
 	if err != nil {
 		return nil, fmt.Errorf("load server cert/key: %w", err)
 	}
+
+	revoked := revoke.NewChecker(revokedFile)
 
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -44,6 +50,14 @@ func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile string) (*tls.Confi
 				return fmt.Errorf("no verified client chain")
 			}
 			leaf := verifiedChains[0][0]
+			// Reject revoked clients. Fail closed: a read/parse error on the
+			// deny-list rejects the connection rather than admit a possibly
+			// revoked client.
+			if yes, err := revoked.IsRevoked(leaf.SerialNumber); err != nil {
+				return fmt.Errorf("revocation check: %w", err)
+			} else if yes {
+				return fmt.Errorf("client cert CN=%q (serial %s) is revoked", leaf.Subject.CommonName, leaf.SerialNumber.Text(16))
+			}
 			for _, eku := range leaf.ExtKeyUsage {
 				if eku == x509.ExtKeyUsageClientAuth {
 					return nil

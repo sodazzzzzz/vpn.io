@@ -46,16 +46,17 @@ const (
 
 // Config carries every knob the server needs at start-up.
 type Config struct {
-	Listen     string // ":8443"
-	CACertFile string
-	CertFile   string
-	KeyFile    string
-	Subnet     string        // "10.8.0.0/24" — pool source
-	Gateway    string        // "10.8.0.1"    — server's TUN IP
-	Netmask    string        // "255.255.255.0" — for AssignIP and TUN config
-	MTU        int           // 1380
-	TUNName    string        // "" → driver picks
-	Keepalive  time.Duration // 0 → off
+	Listen      string // ":8443"
+	CACertFile  string
+	CertFile    string
+	KeyFile     string
+	RevokedFile string        // optional deny-list of revoked client serials (hot-reloaded); empty = none
+	Subnet      string        // "10.8.0.0/24" — pool source
+	Gateway     string        // "10.8.0.1"    — server's TUN IP
+	Netmask     string        // "255.255.255.0" — for AssignIP and TUN config
+	MTU         int           // 1380
+	TUNName     string        // "" → driver picks
+	Keepalive   time.Duration // 0 → off
 
 	// HandshakeTimeout bounds how long a single TLS handshake may take. The
 	// handshake is also bound to the server's lifetime, so a stuck client or a
@@ -121,7 +122,7 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("server: nil TUN device")
 	}
 
-	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile)
+	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, cfg.RevokedFile)
 	if err != nil {
 		return nil, err
 	}
