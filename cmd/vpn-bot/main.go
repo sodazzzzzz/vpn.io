@@ -76,10 +76,13 @@ Commands:
   token -name NAME [-store FILE]
         generate a one-time invite token for a client and print it
 
-  serve -telegram-token TOKEN -dir CA_DIR -server HOST:PORT [-server-name S] [-store FILE] [-installers DIR]
+  serve -telegram-token TOKEN -dir CA_DIR -server HOST:PORT [-server-name S] [-store FILE] [-installers DIR] [-owner ID]
         run the bot: redeem invite tokens and deliver .vpnio profiles.
         With -installers DIR, also offer the app installer for the user's OS
         (*.exe / *.pkg / *.deb found in DIR) via inline buttons.
+        With -owner ID, that Telegram user can mint tokens in-chat with
+        "/invite <name>" instead of this CLI. Anyone can "/whoami" to learn
+        their own ID.
 
 Defaults: -dir ./ca-data, -store ./invite-tokens.json
 `)
@@ -114,6 +117,7 @@ func cmdServe(args []string) error {
 	serverName := fs.String("server-name", "", "SNI / certificate verification host (optional)")
 	storePath := fs.String("store", defaultStore, "invite token store file")
 	installersDir := fs.String("installers", "", "directory with app installers (*.exe/*.pkg/*.deb) to offer after the profile; empty disables")
+	ownerID := fs.Int64("owner", 0, "Telegram user ID allowed to mint tokens with /invite (0 disables; send /whoami to the bot to find yours)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -203,7 +207,7 @@ func cmdServe(args []string) error {
 			if update.Message == nil || update.Message.From == nil {
 				continue
 			}
-			handleMessage(bot, store, authority, update.Message, *server, *serverName, *installersDir)
+			handleMessage(bot, store, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
 		}
 	}
 }
@@ -211,13 +215,25 @@ func cmdServe(args []string) error {
 const helpText = "Send me your one-time invite token and I'll send back your vpn.io profile (.vpnio). " +
 	"Ask the owner for a token if you don't have one."
 
-func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string) {
+func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
 	}
 	if text == "/start" || text == "/help" {
 		reply(bot, msg.Chat.ID, helpText)
+		return
+	}
+	// /whoami reports the caller's own Telegram ID — not secret, and how the
+	// owner discovers the value to pass as -owner.
+	if text == "/whoami" {
+		reply(bot, msg.Chat.ID, fmt.Sprintf("Your Telegram ID is %d.", msg.From.ID))
+		return
+	}
+	// /invite mints a token, but only for the configured owner. Anyone else
+	// falls through (we don't advertise the command).
+	if strings.HasPrefix(text, "/invite") && ownerID != 0 && msg.From.ID == ownerID {
+		handleInvite(bot, store, msg)
 		return
 	}
 	if len(text) > maxTokenLen {
@@ -269,6 +285,27 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 			}
 		}
 	}
+}
+
+// handleInvite mints a one-time token from an owner's "/invite <name>" and
+// replies with it. The caller has already verified the sender is the owner.
+func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message) {
+	name := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/invite"))
+	if name == "" {
+		reply(bot, msg.Chat.ID, "Usage: /invite <client-name>")
+		return
+	}
+	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
+		reply(bot, msg.Chat.ID, "Client name must be plain — no path separators.")
+		return
+	}
+	tok, err := store.Generate(name)
+	if err != nil {
+		log.Printf("/invite generate %q: %v", name, err)
+		reply(bot, msg.Chat.ID, "Couldn't generate a token — check the logs.")
+		return
+	}
+	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, tok.Value))
 }
 
 // userLabel is a human-ish audit string for a Telegram user. UserName is
