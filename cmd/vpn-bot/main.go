@@ -187,7 +187,14 @@ func cmdServe(args []string) error {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					sendSem <- struct{}{} // acquire a slot (off the main loop)
+					// Acquire a slot off the main loop, but bail if we start
+					// shutting down before we get one — a still-queued upload
+					// shouldn't hold up wg.Wait().
+					select {
+					case sendSem <- struct{}{}:
+					case <-ctx.Done():
+						return
+					}
 					defer func() { <-sendSem }()
 					handleCallback(bot, cq, *installersDir)
 				}()
