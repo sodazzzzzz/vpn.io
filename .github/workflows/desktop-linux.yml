@@ -7,10 +7,18 @@ name: desktop-linux
 on:
   push:
     branches: [main, 'desktop-**']
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/**'
+      - 'packaging/deb/**'
+      - '.github/workflows/desktop-linux.yml'
   pull_request:
     paths:
       - 'cmd/vpn-gui/**'
-      - 'packaging/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/**'
+      - 'packaging/deb/**'
       - '.github/workflows/desktop-linux.yml'
   workflow_dispatch:
 
@@ -48,7 +56,7 @@ jobs:
         run: wails build -tags webkit2_40
 
       - name: build helper daemon
-        run: go build -trimpath -o dist/vpn-helper ./cmd/vpn-helper
+        run: go build -trimpath -ldflags="-s -w" -o dist/vpn-helper ./cmd/vpn-helper
 
       - name: install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3

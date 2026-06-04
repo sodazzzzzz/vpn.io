@@ -8,12 +8,17 @@ name: desktop-macos
 on:
   push:
     branches: [main, 'macos-**', 'feat/macos-**']
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/**'
+      - 'packaging/macos/**'
+      - '.github/workflows/desktop-macos.yml'
   pull_request:
     paths:
       - 'cmd/vpn-gui/**'
       - 'cmd/vpn-helper/**'
-      - 'internal/ipc/**'
-      - 'internal/tun/**'
+      - 'internal/**'
       - 'packaging/macos/**'
       - '.github/workflows/desktop-macos.yml'
   workflow_dispatch:
