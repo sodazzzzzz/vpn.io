@@ -3,11 +3,11 @@
 `vpn-bot` hands out client profiles without you running `vpn-ca` and sending
 files by hand: you generate a **one-time invite token**, give it to a person,
 they message it to the bot, and the bot replies with a ready-to-import `.vpnio`
-file.
+file — and, optionally, the app installer for their OS (see `-installers`).
 
 ```
   you ──vpn-bot token -name alice──▶ token  ──(any channel)──▶  friend
-  friend ──token──▶ bot ──issue-client + bundle──▶ alice.vpnio ──▶ friend ──▶ imports in the app
+  friend ──token──▶ bot ──issue-client + bundle──▶ alice.vpnio (+ installer) ──▶ friend ──▶ imports in the app
 ```
 
 ## ⚠️ Trust trade-off (read this)
@@ -70,14 +70,15 @@ Type=simple
 User=vpn-bot
 Group=vpn-bot
 WorkingDirectory=/etc/vpn-bot
-# Keep the bot token out of the unit/argv — put it in an EnvironmentFile (0600):
+# The bot reads the token from $TELEGRAM_TOKEN (EnvironmentFile, 0600) and is
+# NOT passed as a flag, so it never appears in argv / `ps`:
 #   echo 'TELEGRAM_TOKEN=123456:ABC-DEF...' | sudo tee /etc/vpn-bot/bot.env
 EnvironmentFile=/etc/vpn-bot/bot.env
 ExecStart=/usr/local/bin/vpn-bot serve \
-    -telegram-token ${TELEGRAM_TOKEN} \
     -dir /etc/vpn-bot/ca-data \
     -server 203.0.113.5:8443 \
-    -store /etc/vpn-bot/invite-tokens.json
+    -store /etc/vpn-bot/invite-tokens.json \
+    -installers /etc/vpn-bot/installers
 Restart=on-failure
 RestartSec=3
 
@@ -107,6 +108,29 @@ journalctl -u vpn-bot -f
 Set `-server` to the address clients connect to (must match the server
 certificate's `-hosts` SAN — see [SERVER.md](SERVER.md)).
 
+### App installers (optional, `-installers`)
+
+With `-installers DIR`, after sending the `.vpnio` the bot shows **Windows /
+macOS / Linux** buttons and sends the matching installer when one is tapped — so
+a person gets *both* files from one chat. Drop the latest build artifacts there;
+the bot serves the newest file matching each OS by extension:
+
+```
+/etc/vpn-bot/installers/vpn-io-setup.exe   ← Windows  (*.exe)
+/etc/vpn-bot/installers/vpn.io.pkg         ← macOS    (*.pkg)
+/etc/vpn-bot/installers/vpn-io_*.deb       ← Linux    (*.deb)
+```
+
+```bash
+sudo install -d -m 0755 -o vpn-bot -g vpn-bot /etc/vpn-bot/installers
+# copy each installer (from the CI artifacts) into it, e.g.:
+sudo install -m 0644 -o vpn-bot -g vpn-bot vpn.io.pkg /etc/vpn-bot/installers/
+```
+
+A button only appears for an OS that has a file present. Installers aren't secret
+(useless without a profile), so they need no token. Omit `-installers` to send
+just the profile.
+
 ## 5. Onboard someone
 
 Generate a one-time token for them (as the `vpn-bot` user so the store stays
@@ -117,7 +141,8 @@ sudo -u vpn-bot vpn-bot token -name alice -store /etc/vpn-bot/invite-tokens.json
 ```
 
 Send the printed token to the person by any channel. They open a chat with your
-bot, send the token, and get back `alice.vpnio`. The token is **single-use** —
+bot, send the token, and get back `alice.vpnio` (plus, if you set `-installers`,
+buttons to download the app for their OS). The token is **single-use** —
 redeeming it again is rejected. In the app they choose **“Import a profile
 file”** and pick the file.
 
