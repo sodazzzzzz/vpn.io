@@ -38,6 +38,7 @@ const notice = el('notice');
 const noticeTitle = el('notice-title');
 const noticeDetail = el('notice-detail');
 const actionBtn = el('action-btn');
+const orb = el('orb');
 
 // import-screen refs
 const impServer = el('imp-server');
@@ -347,6 +348,13 @@ function wireImport() {
   impCancel.onclick = () => showView('main');
   impBack.onclick = () => showView('main');
   profileBtn.onclick = openImport;
+  // The hero orb is a big, inviting target: clicking (or Enter/Space on it)
+  // does whatever the primary button below currently does. The button stays
+  // clickable too — this just adds the intuitive second target.
+  orb.onclick = () => actionBtn.click();
+  orb.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); actionBtn.click(); }
+  };
   // Resize the window the instant the Advanced section opens/closes, instead of
   // waiting for the next status poll (which is what made it feel laggy).
   const advanced = document.querySelector('#view-import .disclosure');

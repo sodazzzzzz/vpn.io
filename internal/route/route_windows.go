@@ -6,8 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/netip"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -62,14 +64,39 @@ func (windowsRunner) DefaultGateway() (netip.Addr, error) {
 	return best, nil
 }
 
-func (windowsRunner) AddRoute(p netip.Prefix, gw netip.Addr, _ string) error {
-	net, mask := prefixToNetMask(p)
-	return runWin([]string{"route", "ADD", net, "MASK", mask, gw.String()})
+func (windowsRunner) AddRoute(p netip.Prefix, gw netip.Addr, iface string) error {
+	dst, mask := prefixToNetMask(p)
+	argv := []string{"route", "ADD", dst, "MASK", mask, gw.String()}
+	// Pin the route to iface when one is given. Without "IF <index>", Windows
+	// picks the interface itself from the gateway, and for a tunnel gateway
+	// (e.g. 10.8.0.1) it can bind the route to the physical adapter instead of
+	// the TUN — the route then sits on the wrong interface and traffic skips the
+	// tunnel. The pin-hole passes iface="" and keeps the OS's choice.
+	if iface != "" {
+		idx, err := ifaceIndex(iface)
+		if err != nil {
+			return fmt.Errorf("route: resolve interface %q: %w", iface, err)
+		}
+		argv = append(argv, "IF", strconv.Itoa(idx))
+	}
+	return runWin(argv)
 }
 
 func (windowsRunner) DelRoute(p netip.Prefix, gw netip.Addr, _ string) error {
-	net, _ := prefixToNetMask(p)
-	return runWin([]string{"route", "DELETE", net, gw.String()})
+	dst, _ := prefixToNetMask(p)
+	// Delete matches on destination + gateway, which is unique here, so it
+	// removes the route regardless of the interface it ended up on.
+	return runWin([]string{"route", "DELETE", dst, gw.String()})
+}
+
+// ifaceIndex resolves a Windows interface (friendly) name to its numeric index
+// for `route add ... IF <n>`.
+func ifaceIndex(name string) (int, error) {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return 0, err
+	}
+	return ifi.Index, nil
 }
 
 func prefixToNetMask(p netip.Prefix) (string, string) {

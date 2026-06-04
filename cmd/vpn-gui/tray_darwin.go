@@ -81,3 +81,7 @@ func runOnMainThread(fn func()) {
 func setTrayHighlighted(on bool) {
 	C.dispatchHighlightToMain(C.bool(on))
 }
+
+// quitOnWindowClose is false on macOS: closing the window hides it to the menu
+// bar (the standard menu-bar-app behaviour) rather than quitting.
+func quitOnWindowClose() bool { return false }
