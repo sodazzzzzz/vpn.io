@@ -7,6 +7,7 @@ package invite
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -92,7 +93,10 @@ func (s *Store) Redeem(value, usedBy string) (clientName string, err error) {
 	}
 	for i := range f.Tokens {
 		t := &f.Tokens[i]
-		if t.Value == value && !t.Used {
+		// Constant-time compare so matching a token doesn't leak, via timing,
+		// how many leading bytes of the secret were guessed correctly. Unused
+		// check first: a spent token can't be redeemed regardless.
+		if !t.Used && subtle.ConstantTimeCompare([]byte(t.Value), []byte(value)) == 1 {
 			t.Used = true
 			t.UsedBy = usedBy
 			t.UsedAt = time.Now()
