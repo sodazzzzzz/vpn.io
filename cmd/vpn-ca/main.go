@@ -9,8 +9,11 @@
 package main
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,6 +21,7 @@ import (
 
 	"github.com/govpn/internal/ca"
 	"github.com/govpn/internal/profile"
+	"github.com/govpn/internal/revoke"
 )
 
 const defaultDir = "./ca-data"
@@ -39,6 +43,10 @@ func main() {
 		err = cmdList(os.Args[2:])
 	case "export-profile":
 		err = cmdExportProfile(os.Args[2:])
+	case "revoke":
+		err = cmdRevoke(os.Args[2:])
+	case "unrevoke":
+		err = cmdUnrevoke(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -60,9 +68,11 @@ Commands:
   init         [-dir DIR] [-cn NAME]                          create a fresh CA
   issue-server [-dir DIR] -hosts host1,host2,1.2.3.4 [-cn N]  issue the server cert
   issue-client [-dir DIR] -name NAME                          issue a client cert
-  list         [-dir DIR]                                     list issued clients
+  list         [-dir DIR]                                     list issued clients (and revoked)
   export-profile [-dir DIR] -name NAME -server HOST:PORT [-server-name S] [-out FILE]
                                                               bundle a client into one .vpnio file
+  revoke       [-dir DIR] -name NAME                          revoke a client (server rejects it)
+  unrevoke     [-dir DIR] -name NAME                          undo a revoke
 
 Default -dir is ./ca-data.
 `)
@@ -146,13 +156,98 @@ func cmdList(args []string) error {
 	}
 	if len(clients) == 0 {
 		fmt.Println("Clients: (none issued)")
-		return nil
+	} else {
+		fmt.Println("Clients:")
+		for _, c := range clients {
+			fmt.Printf("  - %s\n", c)
+		}
 	}
-	fmt.Println("Clients:")
-	for _, c := range clients {
-		fmt.Printf("  - %s\n", c)
+	revs, err := revoke.New(filepath.Join(*dir, "revoked.json")).List()
+	if err != nil {
+		return err
+	}
+	if len(revs) > 0 {
+		fmt.Println("Revoked:")
+		for _, r := range revs {
+			fmt.Printf("  - %s (serial %s, %s)\n", r.Name, r.Serial, r.RevokedAt.Format("2006-01-02"))
+		}
 	}
 	return nil
+}
+
+// cmdRevoke revokes an issued client by serial: the server rejects its
+// certificate on the next connection (it hot-reloads the deny-list), no restart
+// needed. Re-issuing the same name later (a fresh serial) is not revoked.
+func cmdRevoke(args []string) error {
+	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir, "CA directory")
+	name := fs.String("name", "", "client name to revoke (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("-name is required")
+	}
+	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
+		return fmt.Errorf("-name must be a plain client name (no path separators)")
+	}
+	serial, err := clientCertSerial(*dir, *name)
+	if err != nil {
+		return err
+	}
+	added, err := revoke.New(filepath.Join(*dir, "revoked.json")).Add(serial, *name)
+	if err != nil {
+		return err
+	}
+	if added {
+		fmt.Printf("Revoked %q (serial %s). The server rejects it on the next connection.\n", *name, serial.Text(16))
+	} else {
+		fmt.Printf("%q (serial %s) was already revoked.\n", *name, serial.Text(16))
+	}
+	return nil
+}
+
+// cmdUnrevoke removes a client from the deny-list (undo a revoke).
+func cmdUnrevoke(args []string) error {
+	fs := flag.NewFlagSet("unrevoke", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir, "CA directory")
+	name := fs.String("name", "", "client name to un-revoke (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("-name is required")
+	}
+	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
+		return fmt.Errorf("-name must be a plain client name (no path separators)")
+	}
+	n, err := revoke.New(filepath.Join(*dir, "revoked.json")).Remove(*name)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		fmt.Printf("%q had no revoked certificates.\n", *name)
+	} else {
+		fmt.Printf("Un-revoked %q (%d certificate(s)).\n", *name, n)
+	}
+	return nil
+}
+
+// clientCertSerial parses the issued client certificate and returns its serial.
+func clientCertSerial(dir, name string) (*big.Int, error) {
+	certPEM, err := os.ReadFile(filepath.Join(dir, "clients", name+".crt"))
+	if err != nil {
+		return nil, fmt.Errorf("read client cert: %w", err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, fmt.Errorf("%s.crt: no PEM certificate found", name)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse client cert: %w", err)
+	}
+	return cert.SerialNumber, nil
 }
 
 // cmdExportProfile bundles an already-issued client's credentials and the
