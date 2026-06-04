@@ -91,12 +91,13 @@ func (s *Store) Redeem(value, usedBy string) (clientName string, err error) {
 	if err != nil {
 		return "", err
 	}
+	valueBytes := []byte(value)
 	for i := range f.Tokens {
 		t := &f.Tokens[i]
 		// Constant-time compare so matching a token doesn't leak, via timing,
 		// how many leading bytes of the secret were guessed correctly. Unused
 		// check first: a spent token can't be redeemed regardless.
-		if !t.Used && subtle.ConstantTimeCompare([]byte(t.Value), []byte(value)) == 1 {
+		if !t.Used && subtle.ConstantTimeCompare([]byte(t.Value), valueBytes) == 1 {
 			t.Used = true
 			t.UsedBy = usedBy
 			t.UsedAt = time.Now()
