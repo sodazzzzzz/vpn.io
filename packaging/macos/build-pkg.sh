@@ -48,13 +48,13 @@ mkdir -p "$DIST"
 HELPER="$DIST/vpn-helper"
 case "$PLATFORM" in
   */universal)
-    GOOS=darwin GOARCH=arm64 go build -trimpath -o "$DIST/vpn-helper.arm64" "$REPO_ROOT/cmd/vpn-helper"
-    GOOS=darwin GOARCH=amd64 go build -trimpath -o "$DIST/vpn-helper.amd64" "$REPO_ROOT/cmd/vpn-helper"
+    GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o "$DIST/vpn-helper.arm64" "$REPO_ROOT/cmd/vpn-helper"
+    GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$DIST/vpn-helper.amd64" "$REPO_ROOT/cmd/vpn-helper"
     lipo -create -output "$HELPER" "$DIST/vpn-helper.arm64" "$DIST/vpn-helper.amd64"
     rm -f "$DIST/vpn-helper.arm64" "$DIST/vpn-helper.amd64"
     ;;
   *)
-    GOOS=darwin GOARCH="${PLATFORM##*/}" go build -trimpath -o "$HELPER" "$REPO_ROOT/cmd/vpn-helper"
+    GOOS=darwin GOARCH="${PLATFORM##*/}" go build -trimpath -ldflags="-s -w" -o "$HELPER" "$REPO_ROOT/cmd/vpn-helper"
     ;;
 esac
 # lipo strips the per-slice ad-hoc signature the Go linker adds; re-sign so the
@@ -79,14 +79,25 @@ install -m 0644 "$MACOS/io.vpnio.helper.plist" "$PKGROOT/Library/LaunchDaemons/i
 
 echo "==> Building .pkg ($VERSION)"
 chmod +x "$MACOS/scripts/preinstall" "$MACOS/scripts/postinstall"
+
+# pkgbuild marks .app bundles relocatable by default, so the installer drops the
+# app onto an existing copy elsewhere (e.g. a dev build) instead of
+# /Applications. Generate a component plist and turn relocation off so the app
+# always installs to Applications/vpn.io.app.
+COMPONENT="$DIST/component.plist"
+pkgbuild --analyze --root "$PKGROOT" "$COMPONENT" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT"
+
 rm -f "$PKG"
 pkgbuild \
   --root "$PKGROOT" \
+  --component-plist "$COMPONENT" \
   --scripts "$MACOS/scripts" \
   --identifier "$IDENTIFIER" \
   --version "$VERSION" \
   --install-location / \
   "$PKG"
+rm -f "$COMPONENT"
 
 echo "==> Done"
 ls -lh "$PKG"
