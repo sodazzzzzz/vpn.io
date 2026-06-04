@@ -47,19 +47,28 @@ dl() { echo "    download $1"; curl -fSL --retry 3 -o "$tmp/$1" "$base/$1"; }
 dl vpn-bot
 dl vpn-io-setup.exe
 dl vpn.io.pkg
-dl SHA256SUMS || true
+dl SHA256SUMS   # required — we refuse to install anything we can't verify
 [ "$do_server" = 1 ] && dl vpn-server
 
-# Integrity check against the release's published sums (downloaded files only).
-if [ -f "$tmp/SHA256SUMS" ]; then
-  echo "==> verify checksums"
-  ( cd "$tmp"
-    : > _check
-    for f in vpn-bot vpn-server vpn-io-setup.exe vpn.io.pkg; do
-      [ -f "$f" ] && grep -E "[[:space:]]${f}\$" SHA256SUMS >> _check || true
-    done
-    sha256sum -c _check )
-fi
+# Integrity check against the release's published sums. Fail closed: every
+# downloaded file must have a matching entry, and the hashes must verify — an
+# empty or short match set (e.g. the asset names drifted) is a failure, not a
+# silent pass (`sha256sum -c` on an empty list returns success).
+echo "==> verify checksums"
+( cd "$tmp"
+  : > _check
+  want=0
+  for f in vpn-bot vpn-server vpn-io-setup.exe vpn.io.pkg; do
+    [ -f "$f" ] || continue
+    want=$((want + 1))
+    grep -E "[[:space:]]${f}\$" SHA256SUMS >> _check || true
+  done
+  got=$(grep -c . _check || true)
+  [ "$want" -gt 0 ] && [ "$got" -eq "$want" ] || {
+    echo "checksum entries missing ($got/$want matched) — refusing to install" >&2
+    exit 1
+  }
+  sha256sum -c _check )
 
 echo "==> update bot + installers"
 install -m 0755 "$tmp/vpn-bot" "$BOT_BIN"
