@@ -41,13 +41,12 @@ type fileFormat struct {
 // used both when adding and when checking.
 func serialHex(serial *big.Int) string { return serial.Text(16) }
 
-// load reads the deny-list at path. A missing file is an empty list (no error):
-// revocation simply hasn't been used yet.
+// load reads the deny-list at path. A missing file is reported as os.ErrNotExist
+// (via %w) so callers can tell "no file" from "empty file": the Store treats
+// missing as empty (loadOrEmpty), while the Checker must keep its last-known set
+// if the file vanishes between its stat and this read (TOCTOU / deletion).
 func load(path string) (fileFormat, error) {
 	fh, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return fileFormat{}, nil
-	}
 	if err != nil {
 		return fileFormat{}, fmt.Errorf("revoke: open %q: %w", path, err)
 	}
@@ -68,6 +67,16 @@ func load(path string) (fileFormat, error) {
 		return fileFormat{}, fmt.Errorf("revoke: parse %q: %w", path, err)
 	}
 	return f, nil
+}
+
+// loadOrEmpty is load but treats a missing file as an empty list — the Store's
+// view, where "no file yet" is the normal state before the first revocation.
+func loadOrEmpty(path string) (fileFormat, error) {
+	f, err := load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileFormat{}, nil
+	}
+	return f, err
 }
 
 // save writes f atomically (temp file + fsync + rename) with 0644 permissions,
@@ -132,7 +141,7 @@ func (s *Store) Add(serial *big.Int, name string) (added bool, err error) {
 	key := serialHex(serial)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, err := load(s.Path)
+	f, err := loadOrEmpty(s.Path)
 	if err != nil {
 		return false, err
 	}
@@ -154,7 +163,7 @@ func (s *Store) Add(serial *big.Int, name string) (added bool, err error) {
 func (s *Store) Remove(name string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, err := load(s.Path)
+	f, err := loadOrEmpty(s.Path)
 	if err != nil {
 		return 0, err
 	}
@@ -179,7 +188,7 @@ func (s *Store) Remove(name string) (int, error) {
 func (s *Store) List() ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, err := load(s.Path)
+	f, err := loadOrEmpty(s.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +238,13 @@ func (c *Checker) IsRevoked(serial *big.Int) (bool, error) {
 		// Reload on any mtime or size change (size guards against rapid
 		// rewrites that land in the same mtime tick).
 		f, err := load(c.path)
+		if errors.Is(err, os.ErrNotExist) {
+			// TOCTOU: the file vanished between the Stat above and this read.
+			// Keep the last-known set (don't un-revoke everyone) and reset the
+			// stamps so a recreated file reloads.
+			c.mtime, c.size = time.Time{}, 0
+			break
+		}
 		if err != nil {
 			return false, err
 		}
