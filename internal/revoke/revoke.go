@@ -106,6 +106,12 @@ func save(path string, f fileFormat) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("revoke: replace file: %w", err)
 	}
+	// fsync the directory so the rename itself (not just the file's data) reaches
+	// disk — a revocation shouldn't vanish on a crash right after the rename.
+	if dirF, err := os.Open(dir); err == nil {
+		_ = dirF.Sync()
+		_ = dirF.Close()
+	}
 	return nil
 }
 
@@ -210,7 +216,12 @@ func (c *Checker) IsRevoked(serial *big.Int) (bool, error) {
 	fi, err := os.Stat(c.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		c.set = nil // file gone -> nothing revoked
+		// The file is gone. Deliberately KEEP the last-known set: if it never
+		// held anything c.set is still nil (nothing to enforce), but if it had
+		// revocations and then vanished, we keep enforcing them rather than
+		// silently un-revoking everyone — a real un-revoke rewrites the file via
+		// `vpn-ca unrevoke`, it never deletes it. Reset the stamps so a recreated
+		// file reloads.
 		c.mtime, c.size = time.Time{}, 0
 	case err != nil:
 		return false, fmt.Errorf("revoke: stat %q: %w", c.path, err)

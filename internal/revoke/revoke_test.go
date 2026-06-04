@@ -2,9 +2,35 @@ package revoke
 
 import (
 	"math/big"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestCheckerKeepsLastKnownOnFileDeletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "revoked.json")
+	s := New(path)
+	c := NewChecker(path)
+	s1 := big.NewInt(0x1234)
+
+	if yes, err := c.IsRevoked(s1); err != nil || yes {
+		t.Fatalf("before any file = %v, %v; want false, nil", yes, err)
+	}
+	if _, err := s.Add(s1, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if yes, err := c.IsRevoked(s1); err != nil || !yes {
+		t.Fatalf("after Add = %v, %v; want true", yes, err)
+	}
+	// Deleting the file must NOT silently un-revoke everyone: the last-known set
+	// stays in force (a real un-revoke rewrites the file, never deletes it).
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if yes, err := c.IsRevoked(s1); err != nil || !yes {
+		t.Fatalf("after file deletion = %v, %v; want true (last-known kept)", yes, err)
+	}
+}
 
 func TestStoreAddCheckRemove(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "revoked.json")
