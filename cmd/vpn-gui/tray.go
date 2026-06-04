@@ -25,6 +25,14 @@ var iconWorking []byte
 //go:embed trayicons/failed.png
 var iconFailed []byte
 
+// appIcon is the full-colour app logo. It's the second ("regular") argument to
+// SetTemplateIcon: macOS uses the black template above and recolours it, but on
+// Windows/Linux a black-on-transparent template is invisible on the taskbar, so
+// those platforms get this visible colour icon instead.
+//
+//go:embed build/appicon.png
+var appIcon []byte
+
 // trayPollInterval is how often the tray re-reads the daemon state. The window
 // polls on its own; this keeps the menu-bar icon honest even while the window
 // is hidden.
@@ -59,7 +67,7 @@ func (t *tray) start() {
 }
 
 func (t *tray) onReady() {
-	systray.SetTemplateIcon(iconDisconnected, iconDisconnected)
+	systray.SetTemplateIcon(iconDisconnected, appIcon)
 	systray.SetTooltip("vpn.io")
 
 	t.mStatus = systray.AddMenuItem("Not connected", "")
@@ -118,7 +126,7 @@ func (t *tray) refresh() {
 	t.mu.Unlock()
 	if changed {
 		icon := trayIconFor(state)
-		systray.SetTemplateIcon(icon, icon)
+		systray.SetTemplateIcon(icon, appIcon)
 	}
 
 	t.mStatus.SetTitle(label)
@@ -132,9 +140,16 @@ func (t *tray) showWindow() { t.setWindow(true) }
 
 func (t *tray) toggleWindow() { t.setWindow(!t.visible()) }
 
-// onBeforeClose hides the window instead of quitting, so the app keeps running
-// in the menu bar. Returning true tells Wails to cancel the actual close.
+// onBeforeClose decides what the window's close button does. On macOS the app
+// lives in the menu bar, so close just hides the window (return true cancels the
+// real close). On Windows/Linux users expect the X to quit, so we quit for real
+// (the tray's "Quit" did the same) — otherwise the app lingers with no obvious
+// way out.
 func (t *tray) onBeforeClose() bool {
+	if quitOnWindowClose() {
+		wruntime.Quit(t.app.ctx)
+		return false
+	}
 	t.setWindow(false)
 	return true
 }

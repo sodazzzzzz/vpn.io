@@ -133,7 +133,7 @@
 
 .profile {
   display: flex; align-items: center; gap: var(--s-3);
-  height: 30px; padding: 0 var(--s-3) 0 var(--s-2);
+  height: 30px; padding: 0 var(--s-3);
   border: none; background: transparent; cursor: pointer;
   border-radius: var(--r-sm); color: var(--c-text);
   font: inherit; max-width: 240px;
@@ -180,8 +180,11 @@
   display: grid; place-items: center;
   background: var(--st-tint);
   margin-bottom: var(--s-6);
-  transition: background var(--dur-3) var(--ease);
+  cursor: pointer;
+  transition: background var(--dur-3) var(--ease), transform var(--dur-1) var(--ease);
 }
+.orb:active { transform: scale(0.97); }
+.orb:focus-visible { outline: 2px solid var(--st); outline-offset: 3px; }
 .orb::after {
   content: ""; position: absolute; inset: 0;
   border-radius: 50%;
