@@ -35,8 +35,12 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "==> latest release of $REPO"
-tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+# Fetch fully into a variable first, then parse. Piping curl straight into
+# `grep -m1` makes grep close the pipe on the first match, so curl aborts its
+# still-pending write with exit 23 — which `set -o pipefail` then treats as a
+# failure even though the tag was read fine.
+api="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
+tag="$(printf '%s\n' "$api" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
 [ -n "$tag" ] || { echo "could not determine the latest release tag" >&2; exit 1; }
 echo "    $tag"
 
