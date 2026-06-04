@@ -9,12 +9,18 @@ on:
     branches: [main, 'desktop-**']
     paths:
       - 'cmd/vpn-gui/**'
-      - 'packaging/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/ipc/**'
+      - 'internal/tun/**'
+      - 'packaging/deb/**'
       - '.github/workflows/desktop-linux.yml'
   pull_request:
     paths:
       - 'cmd/vpn-gui/**'
-      - 'packaging/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/ipc/**'
+      - 'internal/tun/**'
+      - 'packaging/deb/**'
       - '.github/workflows/desktop-linux.yml'
   workflow_dispatch:
 
