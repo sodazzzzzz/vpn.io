@@ -140,15 +140,16 @@ func (t *tray) showWindow() { t.setWindow(true) }
 
 func (t *tray) toggleWindow() { t.setWindow(!t.visible()) }
 
-// onBeforeClose decides what the window's close button does. On macOS the app
-// lives in the menu bar, so close just hides the window (return true cancels the
-// real close). On Windows/Linux users expect the X to quit, so we quit for real
+// onBeforeClose decides what the window's close button does. Both branches
+// return true to cancel Wails' own close, so there is a single, explicit exit
+// path. On macOS the app lives in the menu bar, so close just hides the window.
+// On Windows/Linux users expect the X to quit, so we request a graceful Quit
 // (the tray's "Quit" did the same) — otherwise the app lingers with no obvious
 // way out.
 func (t *tray) onBeforeClose() bool {
 	if quitOnWindowClose() {
 		wruntime.Quit(t.app.ctx)
-		return false
+		return true
 	}
 	t.setWindow(false)
 	return true
