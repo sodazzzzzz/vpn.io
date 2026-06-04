@@ -34,6 +34,7 @@ import (
 	"github.com/govpn/internal/ca"
 	"github.com/govpn/internal/invite"
 	"github.com/govpn/internal/profile"
+	"github.com/govpn/internal/revoke"
 )
 
 const (
@@ -80,9 +81,9 @@ Commands:
         run the bot: redeem invite tokens and deliver .vpnio profiles.
         With -installers DIR, also offer the app installer for the user's OS
         (*.exe / *.pkg / *.deb found in DIR) via inline buttons.
-        With -owner ID, that Telegram user can mint tokens in-chat with
-        "/invite <name>" instead of this CLI. Anyone can "/whoami" to learn
-        their own ID.
+        With -owner ID, that Telegram user can manage clients in-chat instead
+        of this CLI: /invite <name>, /revoke <name>, /unrevoke <name>, /revoked.
+        Anyone can /whoami to learn their own ID.
 
 Defaults: -dir ./ca-data, -store ./invite-tokens.json
 `)
@@ -168,6 +169,10 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("connect to Telegram: %w", err)
 	}
 	store := invite.New(*storePath)
+	// One revoke.Store (with one mutex) shared across handlers, like the invite
+	// store — so its read-modify-write stays serialized even if message handling
+	// is ever moved off the single main goroutine.
+	revoked := revoke.New(filepath.Join(authority.Dir, "revoked.json"))
 	log.Printf("vpn-bot online as @%s", bot.Self.UserName)
 
 	// Stop cleanly on SIGTERM / Interrupt (systemd stop). Messages are handled
@@ -222,7 +227,7 @@ func cmdServe(args []string) error {
 			if update.Message == nil || update.Message.From == nil {
 				continue
 			}
-			handleMessage(bot, store, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
+			handleMessage(bot, store, revoked, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
 		}
 	}
 }
@@ -230,7 +235,7 @@ func cmdServe(args []string) error {
 const helpText = "Send me your one-time invite token and I'll send back your vpn.io profile (.vpnio). " +
 	"Ask the owner for a token if you don't have one."
 
-func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
+func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
@@ -252,6 +257,14 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 		// reveals to a group who the owner is.
 		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
 			handleInvite(bot, store, msg)
+		} else {
+			reply(bot, msg.Chat.ID, helpText)
+		}
+		return
+	case "revoke", "unrevoke", "revoked":
+		// Same gate as /invite: owner only, private chat only.
+		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
+			handleRevokeCommand(bot, authority, revoked, msg)
 		} else {
 			reply(bot, msg.Chat.ID, helpText)
 		}
@@ -325,6 +338,75 @@ func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Messa
 	// Audit: a minted token is a credential, like an issued profile.
 	log.Printf("minted invite token for %q via /invite from %s", name, userLabel(msg.From))
 	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, tok.Value))
+}
+
+// handleRevokeCommand serves the owner's /revoke, /unrevoke and /revoked against
+// the same revoked.json the server enforces. The caller has verified the sender
+// is the owner and the chat is private.
+func handleRevokeCommand(bot *tgbotapi.BotAPI, authority *ca.CA, store *revoke.Store, msg *tgbotapi.Message) {
+	if msg.Command() == "revoked" {
+		entries, err := store.List()
+		if err != nil {
+			log.Printf("/revoked list: %v", err)
+			reply(bot, msg.Chat.ID, "Couldn't read the revocation list — check the logs.")
+			return
+		}
+		if len(entries) == 0 {
+			reply(bot, msg.Chat.ID, "No revoked clients.")
+			return
+		}
+		var b strings.Builder
+		b.WriteString("Revoked clients:\n")
+		for _, e := range entries {
+			fmt.Fprintf(&b, "• %s (%s)\n", e.Name, e.RevokedAt.Format("2006-01-02"))
+		}
+		reply(bot, msg.Chat.ID, b.String())
+		return
+	}
+
+	// /revoke and /unrevoke both take a client name.
+	name := strings.TrimSpace(msg.CommandArguments())
+	if err := validateClientName(name); err != nil {
+		reply(bot, msg.Chat.ID, "Can't use that name ("+err.Error()+"). Usage: /"+msg.Command()+" <client-name>")
+		return
+	}
+	who := userLabel(msg.From)
+
+	if msg.Command() == "unrevoke" {
+		n, err := store.Remove(name)
+		if err != nil {
+			log.Printf("/unrevoke %q: %v", name, err)
+			reply(bot, msg.Chat.ID, "Couldn't un-revoke — check the logs.")
+			return
+		}
+		if n == 0 {
+			reply(bot, msg.Chat.ID, fmt.Sprintf("%q had no revoked certificates.", name))
+			return
+		}
+		log.Printf("un-revoked %q via /unrevoke from %s", name, who)
+		reply(bot, msg.Chat.ID, fmt.Sprintf("Un-revoked %q.", name))
+		return
+	}
+
+	// /revoke: look up the issued cert's serial and add it to the deny-list.
+	serial, err := ca.ClientSerial(authority.Dir, name)
+	if err != nil {
+		log.Printf("/revoke %q: %v", name, err)
+		reply(bot, msg.Chat.ID, fmt.Sprintf("No issued client named %q (or its certificate is unreadable).", name))
+		return
+	}
+	added, err := store.Add(serial, name)
+	if err != nil {
+		log.Printf("/revoke add %q: %v", name, err)
+		reply(bot, msg.Chat.ID, "Couldn't revoke — check the logs.")
+		return
+	}
+	if !added {
+		reply(bot, msg.Chat.ID, fmt.Sprintf("%q was already revoked.", name))
+		return
+	}
+	log.Printf("revoked %q via /revoke from %s", name, who)
+	reply(bot, msg.Chat.ID, fmt.Sprintf("Revoked %q. The server cuts it off on its next connection.", name))
 }
 
 // userLabel is a human-ish audit string for a Telegram user. UserName is
