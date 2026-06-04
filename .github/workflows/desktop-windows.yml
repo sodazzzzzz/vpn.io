@@ -8,12 +8,16 @@ name: desktop-windows
 on:
   push:
     branches: [main, 'windows-**', 'feat/windows-**']
+    paths:
+      - 'cmd/vpn-gui/**'
+      - 'cmd/vpn-helper/**'
+      - 'internal/**'
+      - '.github/workflows/desktop-windows.yml'
   pull_request:
     paths:
       - 'cmd/vpn-gui/**'
       - 'cmd/vpn-helper/**'
-      - 'internal/ipc/**'
-      - 'internal/tun/**'
+      - 'internal/**'
       - '.github/workflows/desktop-windows.yml'
   workflow_dispatch:
 
