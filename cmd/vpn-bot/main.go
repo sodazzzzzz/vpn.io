@@ -231,12 +231,15 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 		reply(bot, msg.Chat.ID, fmt.Sprintf("Your Telegram ID is %d.", msg.From.ID))
 		return
 	case "invite":
-		// Only the configured owner mints tokens; anyone else just gets the
-		// greeting (we don't advertise the command).
-		if ownerID != 0 && msg.From.ID == ownerID {
+		// Only the configured owner mints tokens, and only in a private chat: a
+		// token is a credential and must never be printed into a group.
+		switch {
+		case ownerID == 0 || msg.From.ID != ownerID:
+			reply(bot, msg.Chat.ID, helpText) // don't advertise the command
+		case !msg.Chat.IsPrivate():
+			reply(bot, msg.Chat.ID, "Message /invite to me in a private chat — I won't print a token in a group.")
+		default:
 			handleInvite(bot, store, msg)
-		} else {
-			reply(bot, msg.Chat.ID, helpText)
 		}
 		return
 	}
