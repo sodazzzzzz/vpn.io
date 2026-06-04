@@ -169,6 +169,10 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("connect to Telegram: %w", err)
 	}
 	store := invite.New(*storePath)
+	// One revoke.Store (with one mutex) shared across handlers, like the invite
+	// store — so its read-modify-write stays serialized even if message handling
+	// is ever moved off the single main goroutine.
+	revoked := revoke.New(filepath.Join(authority.Dir, "revoked.json"))
 	log.Printf("vpn-bot online as @%s", bot.Self.UserName)
 
 	// Stop cleanly on SIGTERM / Interrupt (systemd stop). Messages are handled
@@ -223,7 +227,7 @@ func cmdServe(args []string) error {
 			if update.Message == nil || update.Message.From == nil {
 				continue
 			}
-			handleMessage(bot, store, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
+			handleMessage(bot, store, revoked, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
 		}
 	}
 }
@@ -231,7 +235,7 @@ func cmdServe(args []string) error {
 const helpText = "Send me your one-time invite token and I'll send back your vpn.io profile (.vpnio). " +
 	"Ask the owner for a token if you don't have one."
 
-func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
+func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
@@ -260,7 +264,7 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 	case "revoke", "unrevoke", "revoked":
 		// Same gate as /invite: owner only, private chat only.
 		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
-			handleRevokeCommand(bot, authority, msg)
+			handleRevokeCommand(bot, authority, revoked, msg)
 		} else {
 			reply(bot, msg.Chat.ID, helpText)
 		}
@@ -339,9 +343,7 @@ func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Messa
 // handleRevokeCommand serves the owner's /revoke, /unrevoke and /revoked against
 // the same revoked.json the server enforces. The caller has verified the sender
 // is the owner and the chat is private.
-func handleRevokeCommand(bot *tgbotapi.BotAPI, authority *ca.CA, msg *tgbotapi.Message) {
-	store := revoke.New(filepath.Join(authority.Dir, "revoked.json"))
-
+func handleRevokeCommand(bot *tgbotapi.BotAPI, authority *ca.CA, store *revoke.Store, msg *tgbotapi.Message) {
 	if msg.Command() == "revoked" {
 		entries, err := store.List()
 		if err != nil {

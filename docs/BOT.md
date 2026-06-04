@@ -166,6 +166,11 @@ client list is never printed into a group); everyone else just gets the
 greeting. Revocations land in the same `revoked.json` the server enforces, so
 point the server's `-revoked` at the CA directory's `revoked.json`.
 
+`/revoke` blocks the **issued certificate** (by serial). A later `/invite alice`
+for the same name issues a *new* certificate that is not on the deny-list — so
+re-inviting a revoked name restores access (use a different name if you don't
+want that).
+
 ## Notes
 
 - The token is 128-bit random and single-use; brute-forcing it is infeasible and

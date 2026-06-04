@@ -128,6 +128,11 @@ func (c *CA) IssueClient(name string) error {
 // reads only the public cert, so it needs no CA key (callers that just revoke
 // don't have to load the whole CA).
 func ClientSerial(dir, name string) (*big.Int, error) {
+	// name becomes a path under clients/ — reject anything that could escape it,
+	// so an exported caller can't be tricked into reading outside the directory.
+	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
+		return nil, fmt.Errorf("ca: invalid client name %q", name)
+	}
 	cert, err := readCert(filepath.Join(dir, "clients", name+".crt"))
 	if err != nil {
 		return nil, err
