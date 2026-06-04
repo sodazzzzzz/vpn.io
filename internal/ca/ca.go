@@ -123,6 +123,23 @@ func (c *CA) IssueClient(name string) error {
 	return c.issueTo(tpl, filepath.Join(c.Dir, "clients"), name)
 }
 
+// ClientSerial returns the serial number of the issued client certificate at
+// <dir>/clients/<name>.crt — the identifier used to revoke that exact cert. It
+// reads only the public cert, so it needs no CA key (callers that just revoke
+// don't have to load the whole CA).
+func ClientSerial(dir, name string) (*big.Int, error) {
+	// name becomes a path under clients/ — reject anything that could escape it,
+	// so an exported caller can't be tricked into reading outside the directory.
+	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
+		return nil, fmt.Errorf("ca: invalid client name %q", name)
+	}
+	cert, err := readCert(filepath.Join(dir, "clients", name+".crt"))
+	if err != nil {
+		return nil, err
+	}
+	return cert.SerialNumber, nil
+}
+
 // ListClients returns the CommonNames of every issued client certificate.
 func (c *CA) ListClients() ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(c.Dir, "clients"))

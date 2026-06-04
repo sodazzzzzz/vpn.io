@@ -9,11 +9,8 @@
 package main
 
 import (
-	"crypto/x509"
-	"encoding/pem"
 	"flag"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -191,7 +188,7 @@ func cmdRevoke(args []string) error {
 	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
 		return fmt.Errorf("-name must be a plain client name (no path separators)")
 	}
-	serial, err := clientCertSerial(*dir, *name)
+	serial, err := ca.ClientSerial(*dir, *name)
 	if err != nil {
 		return err
 	}
@@ -231,23 +228,6 @@ func cmdUnrevoke(args []string) error {
 		fmt.Printf("Un-revoked %q (%d certificate(s)).\n", *name, n)
 	}
 	return nil
-}
-
-// clientCertSerial parses the issued client certificate and returns its serial.
-func clientCertSerial(dir, name string) (*big.Int, error) {
-	certPEM, err := os.ReadFile(filepath.Join(dir, "clients", name+".crt"))
-	if err != nil {
-		return nil, fmt.Errorf("read client cert: %w", err)
-	}
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return nil, fmt.Errorf("%s.crt: no PEM certificate found", name)
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse client cert: %w", err)
-	}
-	return cert.SerialNumber, nil
 }
 
 // cmdExportProfile bundles an already-issued client's credentials and the
