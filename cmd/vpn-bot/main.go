@@ -95,17 +95,32 @@ func cmdToken(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *name == "" {
-		return fmt.Errorf("-name is required")
-	}
-	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
-		return fmt.Errorf("-name must be a plain client name (no path separators)")
+	if err := validateClientName(*name); err != nil {
+		return fmt.Errorf("-name: %w", err)
 	}
 	tok, err := invite.New(*storePath).Generate(*name)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Invite token for %q:\n\n  %s\n\nSend it to the person; they message it to the bot to receive their profile.\n", *name, tok.Value)
+	return nil
+}
+
+// validateClientName rejects names that aren't a plain, filesystem-safe client
+// identifier. The CA writes <name>.crt/.key, so a path separator would escape
+// the directory and an over-long name would break os.WriteFile (NAME_MAX 255).
+// Because a redeemed token is spent before the cert is issued, a name that only
+// fails at issue time would burn the token — so reject it up front. Shared by
+// the `token` command and `/invite`.
+func validateClientName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("name is required")
+	case len(name) > 64:
+		return fmt.Errorf("name too long (max 64 characters)")
+	case strings.ContainsAny(name, `/\`) || name == "." || name == "..":
+		return fmt.Errorf("name must be plain — no path separators")
+	}
 	return nil
 }
 
@@ -231,15 +246,14 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 		reply(bot, msg.Chat.ID, fmt.Sprintf("Your Telegram ID is %d.", msg.From.ID))
 		return
 	case "invite":
-		// Only the configured owner mints tokens, and only in a private chat: a
-		// token is a credential and must never be printed into a group.
-		switch {
-		case ownerID == 0 || msg.From.ID != ownerID:
-			reply(bot, msg.Chat.ID, helpText) // don't advertise the command
-		case !msg.Chat.IsPrivate():
-			reply(bot, msg.Chat.ID, "Message /invite to me in a private chat — I won't print a token in a group.")
-		default:
+		// A token is a credential: mint it only for the owner, and only in a
+		// private chat. Every other case (non-owner, or even the owner in a
+		// group) just gets the greeting — that neither prints a token nor
+		// reveals to a group who the owner is.
+		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
 			handleInvite(bot, store, msg)
+		} else {
+			reply(bot, msg.Chat.ID, helpText)
 		}
 		return
 	}
@@ -298,12 +312,8 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, authority *ca.CA, 
 // replies with it. The caller has already verified the sender is the owner.
 func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message) {
 	name := strings.TrimSpace(msg.CommandArguments())
-	if name == "" {
-		reply(bot, msg.Chat.ID, "Usage: /invite <client-name>")
-		return
-	}
-	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
-		reply(bot, msg.Chat.ID, "Client name must be plain — no path separators.")
+	if err := validateClientName(name); err != nil {
+		reply(bot, msg.Chat.ID, "Can't use that name ("+err.Error()+"). Usage: /invite <client-name>")
 		return
 	}
 	tok, err := store.Generate(name)
