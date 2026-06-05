@@ -284,6 +284,13 @@ func (c *Client) runDevicePoller(ctx context.Context, outbound chan<- []byte) {
 // (wrapping one of the sentinels) if the failure shouldn't be retried.
 // Otherwise returns a retryable error.
 func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error {
+	// On a reconnect the system routes from the first connect are still in
+	// place, so the dial to the server must pass through the server pin-hole. A
+	// network change (e.g. Wi-Fi drop then rejoin) can flush or stale that
+	// pin-hole, after which the server's IP falls under the tunnel split-routes
+	// and the dial blackholes — re-pin it via the current default gateway first.
+	c.refreshServerPinhole()
+
 	dialer := &tls.Dialer{Config: c.tlsConfig}
 	conn, err := dialer.DialContext(ctx, "tcp", c.cfg.Server)
 	if err != nil {
@@ -404,6 +411,26 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 	c.routes = mgr
 	c.log.Info("system routes installed", "count", len(a.Routes), "via", tunGW, "server-pinhole", serverIP)
 	return nil
+}
+
+// refreshServerPinhole re-pins the server route through the current default
+// gateway before a reconnect dial. It's a no-op on the first connect (routes
+// aren't installed yet — the normal default route reaches the server, and the
+// pin-hole is added afterwards by ensureRoutes). Best-effort: if the gateway
+// can't be determined yet (e.g. the network is still down right after a Wi-Fi
+// drop), the failure is logged and we still attempt the dial, which then fails
+// and retries as before. So this never makes reconnect worse — it only recovers
+// the case where a network change flushed the pin-hole and left the server
+// unreachable through the dead tunnel (the Windows "eternal reconnect" bug).
+func (c *Client) refreshServerPinhole() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.routes == nil {
+		return
+	}
+	if err := c.routes.RefreshServerPinhole(); err != nil {
+		c.log.Debug("server pin-hole refresh skipped", "err", err)
+	}
 }
 
 // ensureLeakProtection enables leak protection on the first AssignIP that

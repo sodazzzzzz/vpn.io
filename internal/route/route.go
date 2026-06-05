@@ -121,6 +121,51 @@ func (m *Manager) Remove() {
 	m.rollback()
 }
 
+// RefreshServerPinhole re-pins the host route to the VPN server through the
+// gateway that is the default *now*. The pin-hole is installed once at Install
+// time via whatever gateway existed then; a network change (e.g. Wi-Fi drop
+// then rejoin) can flush it or leave it pointing at a gateway that no longer
+// exists. With the pin-hole gone, the server's IP falls under the tunnel
+// split-routes (128.0.0.0/1 via the tunnel gateway) and a reconnect dial
+// blackholes into the now-dead tunnel — the connection can never recover on
+// its own. Calling this before each reconnect dial re-asserts the pin-hole via
+// the current default gateway, keeping the control connection routable across
+// network changes. Safe to call repeatedly.
+func (m *Manager) RefreshServerPinhole() error {
+	if !m.server.IsValid() {
+		return fmt.Errorf("route: server IP not set")
+	}
+	gw, err := m.runner.DefaultGateway()
+	if err != nil {
+		return fmt.Errorf("route: refresh pin-hole, query default gateway: %w", err)
+	}
+	pinhole := netip.PrefixFrom(m.server, m.server.BitLen())
+
+	// Drop the previous pin-hole and re-add it via the current gateway. The old
+	// one may be stale or already flushed by the OS, so a delete failure is
+	// expected here and only logged.
+	if m.pinholeGW.IsValid() {
+		if err := m.runner.DelRoute(pinhole, m.pinholeGW, ""); err != nil {
+			m.log.Debug("refresh pin-hole: stale delete failed (expected)", "via", m.pinholeGW, "err", err)
+		}
+	}
+	if err := m.runner.AddRoute(pinhole, gw, ""); err != nil {
+		return fmt.Errorf("route: refresh pin-hole %s via %s: %w", pinhole, gw, err)
+	}
+	m.pinholeGW = gw
+
+	// Keep the rollback record pointing at the live pin-hole so shutdown removes
+	// the right route.
+	for i := range m.installed {
+		if m.installed[i].prefix == pinhole {
+			m.installed[i].gw = gw
+			break
+		}
+	}
+	m.log.Debug("server pin-hole refreshed", "server", m.server, "via", gw)
+	return nil
+}
+
 func (m *Manager) add(p netip.Prefix, gw netip.Addr, iface string) error {
 	if err := m.runner.AddRoute(p, gw, iface); err != nil {
 		return err
