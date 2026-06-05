@@ -262,3 +262,27 @@ func TestRefreshServerPinhole_GatewayErrorReportedNoChange(t *testing.T) {
 		t.Fatalf("expected no route calls on gateway error, got %+v", r.calls)
 	}
 }
+
+func TestRefreshServerPinhole_SkipsWhenGatewayResolvesToTunnel(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// On a reconnect the OS default-route lookup can hand back the tunnel gateway
+	// (the split-routes point there). Refresh must skip rather than pin the server
+	// through the tunnel it carries.
+	r.defaultGW = netip.MustParseAddr("10.8.0.1") // == tunnel gateway
+	r.calls = nil
+	if err := m.RefreshServerPinhole(); err == nil {
+		t.Fatal("expected refresh to skip when the gateway resolves to the tunnel")
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("expected no route calls when gateway is the tunnel, got %+v", r.calls)
+	}
+}

@@ -139,6 +139,16 @@ func (m *Manager) RefreshServerPinhole() error {
 	if err != nil {
 		return fmt.Errorf("route: refresh pin-hole, query default gateway: %w", err)
 	}
+	// Guard against the default-gateway query resolving to the tunnel itself.
+	// The split-routes (0.0.0.0/1 + 128.0.0.0/1) point at the tunnel gateway and
+	// are still present on a reconnect; an OS whose "default route" lookup honours
+	// longest-prefix (rather than the literal 0.0.0.0/0 entry) can hand back the
+	// tunnel gateway. Pinning the server through it would route the control
+	// connection into the very tunnel it carries — worse than doing nothing — so
+	// skip and let the caller retry.
+	if gw == m.tunGW {
+		return fmt.Errorf("route: default gateway resolved to tunnel %s; skipping pin-hole refresh", gw)
+	}
 	pinhole := netip.PrefixFrom(m.server, m.server.BitLen())
 
 	// Drop the previous pin-hole and re-add it via the current gateway. The old
