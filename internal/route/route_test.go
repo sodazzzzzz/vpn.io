@@ -201,3 +201,88 @@ func TestInstall_DefaultGatewayError(t *testing.T) {
 		t.Fatalf("no routes should be added when default gw lookup fails, got %+v", r.calls)
 	}
 }
+
+func TestRefreshServerPinhole_RepinsViaNewGateway(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// Simulate a network change: the default gateway moved after a Wi-Fi rejoin.
+	r.defaultGW = netip.MustParseAddr("10.0.0.1")
+	r.calls = nil
+	if err := m.RefreshServerPinhole(); err != nil {
+		t.Fatalf("RefreshServerPinhole: %v", err)
+	}
+
+	pinhole := netip.MustParsePrefix("203.0.113.5/32")
+	want := []call{
+		{op: "del", prefix: pinhole, gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
+		{op: "add", prefix: pinhole, gw: netip.MustParseAddr("10.0.0.1"), iface: ""},
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("calls mismatch:\n got=%+v\nwant=%+v", r.calls, want)
+	}
+
+	// Rollback must now target the live pin-hole (refreshed gateway), so the
+	// shutdown delete doesn't leave a stale host route behind.
+	r.calls = nil
+	m.Remove()
+	last := r.calls[len(r.calls)-1]
+	if last.op != "del" || last.prefix != pinhole || last.gw != netip.MustParseAddr("10.0.0.1") {
+		t.Fatalf("pin-hole rollback used wrong gateway: %+v", last)
+	}
+}
+
+func TestRefreshServerPinhole_GatewayErrorReportedNoChange(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// Network still down on reconnect: DefaultGateway fails → refresh returns an
+	// error and touches no routes (caller falls through to a normal retry).
+	r.defaultGW = netip.Addr{}
+	r.defaultGWErr = errors.New("no default route")
+	r.calls = nil
+	if err := m.RefreshServerPinhole(); err == nil {
+		t.Fatal("expected an error when the default gateway is unavailable")
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("expected no route calls on gateway error, got %+v", r.calls)
+	}
+}
+
+func TestRefreshServerPinhole_SkipsWhenGatewayResolvesToTunnel(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// On a reconnect the OS default-route lookup can hand back the tunnel gateway
+	// (the split-routes point there). Refresh must skip rather than pin the server
+	// through the tunnel it carries.
+	r.defaultGW = netip.MustParseAddr("10.8.0.1") // == tunnel gateway
+	r.calls = nil
+	if err := m.RefreshServerPinhole(); err == nil {
+		t.Fatal("expected refresh to skip when the gateway resolves to the tunnel")
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("expected no route calls when gateway is the tunnel, got %+v", r.calls)
+	}
+}
