@@ -417,11 +417,28 @@ func (s *Server) sessionReader(sess *Session) {
 // sessionWriter serializes outbound writes to one client. It exits when
 // the session's closeCh fires (e.g. peer disconnect, server shutdown,
 // reconnect kick).
+//
+// It also emits a keepalive every Config.Keepalive. The client uses this as
+// proof of life: without a frame arriving on a schedule, a client cannot tell a
+// wedged server from an idle one, and sits at "Connected" on a tunnel that
+// carries nothing. Sending them from here rather than a separate goroutine
+// keeps this the only writer on the connection, so no extra locking is needed.
 func (s *Server) sessionWriter(sess *Session) {
+	var tick <-chan time.Time
+	if s.cfg.Keepalive > 0 {
+		t := time.NewTicker(s.cfg.Keepalive)
+		defer t.Stop()
+		tick = t.C
+	}
 	for {
 		select {
 		case <-sess.closeCh:
 			return
+		case <-tick:
+			if err := tunnel.WriteControl(sess.Conn, tunnel.NewKeepalive()); err != nil {
+				sess.close()
+				return
+			}
 		case pkt := <-sess.outbound:
 			if err := tunnel.WriteData(sess.Conn, pkt); err != nil {
 				sess.close()

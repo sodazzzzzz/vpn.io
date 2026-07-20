@@ -29,10 +29,12 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
@@ -47,6 +49,12 @@ import (
 // poller and the (re-)connected TLS writer. When full, the poller drops
 // the newest packet — the apps will retransmit.
 const outboundBufferDepth = 64
+
+// writeTimeout bounds a single frame write to the server. Frames are at most
+// one MTU, so any healthy path finishes one in milliseconds; this is set far
+// above that because the only thing it needs to distinguish is "slow" from
+// "the peer stopped reading and never will".
+const writeTimeout = 30 * time.Second
 
 // Config holds every knob the client needs at start-up.
 //
@@ -563,7 +571,7 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 	defer cancel()
 	defer func() { _ = conn.Close() }()
 
-	w := newConnWriter(conn)
+	w := newConnWriter(conn, writeTimeout)
 	errCh := make(chan error, 3) // bounded by # of goroutines below
 
 	var wg sync.WaitGroup
@@ -625,11 +633,35 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 // these are packets the server is delivering to us). Control frames are
 // inspected; an explicit Error message ends the session as fatal.
 func (c *Client) connReader(ctx context.Context, conn *tls.Conn) error {
+	// Read-idle detection. A server whose process has wedged while its kernel
+	// keeps the TCP session open sends nothing, and without a deadline this
+	// Read parks forever: the session never ends, the reconnect loop never
+	// runs, and the user keeps seeing "Connected" on a tunnel carrying nothing.
+	//
+	// The deadline is armed only after the first server-sent keepalive, which
+	// is what makes it safe to ship against an already-deployed server: older
+	// servers never send them, so the deadline is never armed and those
+	// connections behave exactly as before. Once a server has proved it sends
+	// keepalives, silence for several intervals means the path is dead.
+	var idle time.Duration
+	if c.cfg.Keepalive > 0 {
+		idle = 3 * c.cfg.Keepalive
+	}
+	armed := false
+
 	for {
+		if armed {
+			if err := conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
+				return fmt.Errorf("client: set read deadline: %w", err)
+			}
+		}
 		typ, body, err := tunnel.ReadPacket(conn)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if armed && errors.Is(err, os.ErrDeadlineExceeded) {
+				return fmt.Errorf("client: no frame from server for %s — connection is dead", idle)
 			}
 			return fmt.Errorf("client: read packet: %w", err)
 		}
@@ -646,7 +678,12 @@ func (c *Client) connReader(ctx context.Context, conn *tls.Conn) error {
 			}
 			switch msg.Type {
 			case tunnel.CtrlKeepalive:
-				// rx is proof of life — nothing to do.
+				// rx is proof of life. It also tells us this server sends
+				// keepalives on a schedule, so from here on their absence is
+				// meaningful and the idle deadline can be enforced.
+				if idle > 0 {
+					armed = true
+				}
 			case tunnel.CtrlError:
 				emsg, _ := tunnel.ParseError(msg)
 				return fmt.Errorf("%w: %s: %s", ErrFatalServer, emsg.Code, emsg.Message)
@@ -699,20 +736,40 @@ func (c *Client) keepalive(ctx context.Context, w *connWriter) error {
 type connWriter struct {
 	conn net.Conn
 	mu   sync.Mutex
+	// timeout bounds each write. A peer whose kernel still holds the TCP
+	// session but whose process has stopped reading eventually fills the send
+	// buffer, and an unbounded Write parks there forever — taking the writer's
+	// mutex with it, so the keepalive can't run either and nothing ever errors.
+	// The session then never ends and the user keeps seeing "Connected".
+	// 0 disables the bound.
+	timeout time.Duration
 }
 
-func newConnWriter(conn net.Conn) *connWriter {
-	return &connWriter{conn: conn}
+func newConnWriter(conn net.Conn, timeout time.Duration) *connWriter {
+	return &connWriter{conn: conn, timeout: timeout}
+}
+
+// write runs fn under the writer's lock with a fresh write deadline applied.
+//
+// The deadline is deliberately not cleared afterwards. Every write sets its
+// own, so a leftover one can never shorten a later write; and clearing it would
+// wipe the past deadline runSession's teardown sets to unpark writers that are
+// parked on a peer which stopped reading.
+func (w *connWriter) write(fn func() error) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.timeout > 0 {
+		if err := w.conn.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
+			return err
+		}
+	}
+	return fn()
 }
 
 func (w *connWriter) Data(pkt []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return tunnel.WriteData(w.conn, pkt)
+	return w.write(func() error { return tunnel.WriteData(w.conn, pkt) })
 }
 
 func (w *connWriter) Control(msg tunnel.ControlMessage) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return tunnel.WriteControl(w.conn, msg)
+	return w.write(func() error { return tunnel.WriteControl(w.conn, msg) })
 }
