@@ -270,6 +270,17 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 		}
 		return
 	}
+	// Everything below treats the text as a candidate invite token, and a
+	// successful redemption replies with a .vpnio bundle that carries the
+	// client's *private key*. That must never happen outside a private chat:
+	// a user who pastes their token into a group would otherwise hand every
+	// member a working profile. Staying silent (rather than explaining) also
+	// keeps the bot from reacting to ordinary group chatter, and avoids
+	// echoing the token's fate back into the group.
+	if !redeemableChat(msg.Chat) {
+		return
+	}
+
 	if len(text) > maxTokenLen {
 		reply(bot, msg.Chat.ID, "That doesn't look like an invite token. Send the token the owner gave you.")
 		return
@@ -319,6 +330,13 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 			}
 		}
 	}
+}
+
+// redeemableChat reports whether a chat may redeem an invite token. Only a
+// private (one-to-one) chat qualifies, because redemption hands back the
+// client's private key — see the call site.
+func redeemableChat(chat *tgbotapi.Chat) bool {
+	return chat != nil && chat.IsPrivate()
 }
 
 // handleInvite mints a one-time token from an owner's "/invite <name>" and
