@@ -3,8 +3,11 @@ package ca
 import (
 	"crypto/x509"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/govpn/internal/revoke"
 )
 
 func TestCreateLoadAndIssue(t *testing.T) {
@@ -94,4 +97,164 @@ func verify(root, leaf *x509.Certificate, usage x509.ExtKeyUsage) error {
 		KeyUsages: []x509.ExtKeyUsage{usage},
 	})
 	return err
+}
+
+// The scenario from the issue: alice's profile leaks, the operator re-issues
+// to "replace" it, then revokes. Before the ledger the old certificate's serial
+// lived only in clients/alice.crt, which the re-issue overwrote — so the leaked
+// cert could not be revoked by any tool and stayed valid for up to a year.
+func TestReissueLeavesNoUnrevocableCert(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Create(dir, "test CA")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := root.IssueClient("alice"); err != nil {
+		t.Fatalf("IssueClient: %v", err)
+	}
+	leaked, err := ClientSerial(dir, "alice")
+	if err != nil {
+		t.Fatalf("ClientSerial: %v", err)
+	}
+
+	// The operator re-issues, believing it replaces the leaked profile.
+	if err := root.IssueClient("alice"); err != nil {
+		t.Fatalf("re-IssueClient: %v", err)
+	}
+	current, err := ClientSerial(dir, "alice")
+	if err != nil {
+		t.Fatalf("ClientSerial after re-issue: %v", err)
+	}
+	if current.Cmp(leaked) == 0 {
+		t.Fatal("re-issue reused the serial; test cannot detect the bug")
+	}
+
+	// The superseded certificate must already be denied — the operator's intent
+	// in re-issuing was to retire it.
+	checker := revoke.NewChecker(filepath.Join(dir, "revoked.json"))
+	yes, err := checker.IsRevoked(leaked)
+	if err != nil {
+		t.Fatalf("IsRevoked: %v", err)
+	}
+	if !yes {
+		t.Error("superseded certificate is still accepted after re-issue")
+	}
+
+	// And revoking by name must reach every serial, not just the current one.
+	serials, err := ClientSerials(dir, "alice")
+	if err != nil {
+		t.Fatalf("ClientSerials: %v", err)
+	}
+	if len(serials) != 2 {
+		t.Fatalf("ClientSerials returned %d serials, want 2 (leaked + current)", len(serials))
+	}
+	found := map[string]bool{}
+	for _, s := range serials {
+		found[s.Text(16)] = true
+	}
+	if !found[leaked.Text(16)] || !found[current.Text(16)] {
+		t.Errorf("ClientSerials missed a serial: got %v", found)
+	}
+}
+
+// Corollary from the issue: issuing a previously revoked name used to mint a
+// serial absent from the deny-list, silently lifting the revocation. The new
+// certificate is legitimately live (the owner asked for it), but the revoked
+// one it replaces must stay denied.
+func TestReissueDoesNotResurrectRevokedCert(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Create(dir, "test CA")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := root.IssueClient("bob"); err != nil {
+		t.Fatalf("IssueClient: %v", err)
+	}
+	old, err := ClientSerial(dir, "bob")
+	if err != nil {
+		t.Fatalf("ClientSerial: %v", err)
+	}
+
+	store := revoke.New(filepath.Join(dir, "revoked.json"))
+	if _, err := store.Add(old, "bob"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := root.IssueClient("bob"); err != nil {
+		t.Fatalf("re-IssueClient: %v", err)
+	}
+
+	checker := revoke.NewChecker(filepath.Join(dir, "revoked.json"))
+	yes, err := checker.IsRevoked(old)
+	if err != nil {
+		t.Fatalf("IsRevoked: %v", err)
+	}
+	if !yes {
+		t.Error("re-issuing the name lifted the revocation on the old certificate")
+	}
+
+	// The freshly issued certificate is the live one and must not be denied.
+	current, err := ClientSerial(dir, "bob")
+	if err != nil {
+		t.Fatalf("ClientSerial after re-issue: %v", err)
+	}
+	yes, err = checker.IsRevoked(current)
+	if err != nil {
+		t.Fatalf("IsRevoked(current): %v", err)
+	}
+	if yes {
+		t.Error("the newly issued certificate is denied")
+	}
+
+	// The re-issue is the owner's deliberate act, so the new cert being live is
+	// correct — but it must not happen silently. Both issuances are on record.
+	ledger, err := loadLedger(dir)
+	if err != nil {
+		t.Fatalf("loadLedger: %v", err)
+	}
+	var forBob []string
+	for _, e := range ledger.Issued {
+		if e.Name == "bob" {
+			forBob = append(forBob, e.Serial)
+		}
+	}
+	if len(forBob) != 2 {
+		t.Fatalf("ledger records %d issuances for bob, want 2: %v", len(forBob), forBob)
+	}
+	if forBob[0] != old.Text(16) || forBob[1] != current.Text(16) {
+		t.Errorf("ledger = %v, want [%s %s] in issue order", forBob, old.Text(16), current.Text(16))
+	}
+}
+
+// A CA created before the ledger existed has no issued.json. Revocation must
+// still find the certificate on disk rather than reporting an unknown client.
+func TestClientSerialsFallsBackToCertOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Create(dir, "test CA")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := root.IssueClient("carol"); err != nil {
+		t.Fatalf("IssueClient: %v", err)
+	}
+	// Simulate the pre-ledger layout.
+	if err := os.Remove(filepath.Join(dir, "issued.json")); err != nil {
+		t.Fatalf("remove ledger: %v", err)
+	}
+
+	serials, err := ClientSerials(dir, "carol")
+	if err != nil {
+		t.Fatalf("ClientSerials: %v", err)
+	}
+	cur, err := ClientSerial(dir, "carol")
+	if err != nil {
+		t.Fatalf("ClientSerial: %v", err)
+	}
+	if len(serials) != 1 || serials[0].Cmp(cur) != 0 {
+		t.Fatalf("got %v, want just the on-disk serial %s", serials, cur.Text(16))
+	}
+
+	if _, err := ClientSerials(dir, "nobody"); err == nil {
+		t.Error("ClientSerials succeeded for a name that was never issued")
+	}
 }

@@ -8,6 +8,8 @@
 //	ca.crt, ca.key                  — root authority (key never leaves this host)
 //	server/server.crt, server.key   — single server certificate
 //	clients/<name>.crt, <name>.key  — one pair per issued client
+//	issued.json                     — append-only ledger of every issued client cert
+//	revoked.json                    — deny-list of revoked serials (package revoke)
 package ca
 
 import (
@@ -17,12 +19,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/govpn/internal/revoke"
 )
 
 const (
@@ -113,6 +118,12 @@ func (c *CA) IssueServer(commonName string, dnsNames []string, ips []net.IP) err
 
 // IssueClient creates a client certificate identified by name, written to
 // <Dir>/clients/<name>.{crt,key}.
+//
+// Re-issuing an existing name revokes the certificates it supersedes. The
+// operator's reason for re-issuing is almost always "that profile leaked" —
+// and without this the old certificate stayed valid against the CA for up to a
+// year while becoming impossible to revoke, because its serial lived only in
+// the file the re-issue just overwrote. One name means one live profile.
 func (c *CA) IssueClient(name string) error {
 	tpl, err := baseTemplate(name, clientValidity)
 	if err != nil {
@@ -120,7 +131,39 @@ func (c *CA) IssueClient(name string) error {
 	}
 	tpl.KeyUsage = x509.KeyUsageDigitalSignature
 	tpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+
+	// Revoke the superseded certificates before signing the replacement, so a
+	// failure part-way through leaves the old ones denied rather than live.
+	if err := c.revokeSuperseded(name); err != nil {
+		return err
+	}
+	// Record the issuance before writing it: a ledger entry whose certificate
+	// never made it to disk is harmless, a certificate missing from the ledger
+	// is unrevocable.
+	if err := appendIssued(c.Dir, name, tpl.SerialNumber); err != nil {
+		return err
+	}
 	return c.issueTo(tpl, filepath.Join(c.Dir, "clients"), name)
+}
+
+// revokeSuperseded denies every certificate previously issued to name. A name
+// that was never issued has nothing to supersede and is not an error.
+func (c *CA) revokeSuperseded(name string) error {
+	prior, err := ClientSerials(c.Dir, name)
+	if err != nil {
+		// No ledger entry and no certificate on disk: a first issuance.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	store := revoke.New(filepath.Join(c.Dir, "revoked.json"))
+	for _, serial := range prior {
+		if _, err := store.Add(serial, name); err != nil {
+			return fmt.Errorf("ca: revoke superseded cert for %q: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // ClientSerial returns the serial number of the issued client certificate at

@@ -109,8 +109,14 @@ Point the server at that deny-list so it enforces it — set `VPN_REVOKED` in
 `server.env` to the `revoked.json` path (e.g. `/etc/vpn-server/revoked.json`,
 or the `revoked.json` in your CA directory) and `systemctl restart vpn-server`
 once. After that the server **hot-reloads** the file: each `vpn-ca revoke` takes
-effect on the client's next connection, no restart needed. Revocation is by
-certificate serial, so re-issuing the same name later is not affected.
+effect on the client's next connection, no restart needed.
+
+`revoke` denies **every** certificate ever issued to that name, including ones
+replaced by an earlier re-issue — the CA keeps an append-only record of its
+issuances in `ca-data/issued.json` for exactly this reason. Re-issuing a name
+(`issue-client`, or `/invite` in the bot) revokes the certificate it replaces,
+so one name always means one live profile; `unrevoke` lifts the revocation on
+the client's *current* certificate only, and never resurrects a replaced one.
 
 ---
 

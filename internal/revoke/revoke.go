@@ -157,9 +157,43 @@ func (s *Store) Add(serial *big.Int, name string) (added bool, err error) {
 	return true, nil
 }
 
+// RemoveSerial un-revokes exactly one certificate and reports whether it was on
+// the list.
+//
+// This is the safe undo for a revocation. Removing by name would also lift the
+// revocations a re-issue applied to superseded certificates — which is to say,
+// it would hand a leaked profile back its access. Callers that mean "trust this
+// client's *current* certificate again" want this, not Remove.
+func (s *Store) RemoveSerial(serial *big.Int) (bool, error) {
+	key := serialHex(serial)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := loadOrEmpty(s.Path)
+	if err != nil {
+		return false, err
+	}
+	kept := f.Revoked[:0:0]
+	for _, e := range f.Revoked {
+		if e.Serial != key {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) == len(f.Revoked) {
+		return false, nil
+	}
+	f.Revoked = kept
+	if err := save(s.Path, f); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Remove un-revokes every entry with the given client name and reports how many
-// were removed. Removing by name (not serial) matches the operator's view —
-// "trust this person again" — even if the name had several revoked certs.
+// were removed.
+//
+// Prefer RemoveSerial: since a re-issue revokes the certificates it supersedes,
+// removing by name also un-revokes those, restoring access to profiles that
+// were deliberately retired.
 func (s *Store) Remove(name string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

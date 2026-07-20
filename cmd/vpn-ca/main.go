@@ -172,9 +172,11 @@ func cmdList(args []string) error {
 	return nil
 }
 
-// cmdRevoke revokes an issued client by serial: the server rejects its
-// certificate on the next connection (it hot-reloads the deny-list), no restart
-// needed. Re-issuing the same name later (a fresh serial) is not revoked.
+// cmdRevoke revokes every certificate ever issued to a client: the server
+// rejects them on the next connection (it hot-reloads the deny-list), no
+// restart needed. Revoking by name rather than by the current certificate is
+// what makes a re-issued (superseded) certificate reachable at all — its serial
+// is no longer in clients/<name>.crt, only in the issuance ledger.
 func cmdRevoke(args []string) error {
 	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir, "CA directory")
@@ -188,23 +190,37 @@ func cmdRevoke(args []string) error {
 	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
 		return fmt.Errorf("-name must be a plain client name (no path separators)")
 	}
-	serial, err := ca.ClientSerial(*dir, *name)
+	serials, err := ca.ClientSerials(*dir, *name)
 	if err != nil {
 		return err
 	}
-	added, err := revoke.New(filepath.Join(*dir, "revoked.json")).Add(serial, *name)
-	if err != nil {
-		return err
+	store := revoke.New(filepath.Join(*dir, "revoked.json"))
+	added := 0
+	for _, serial := range serials {
+		ok, err := store.Add(serial, *name)
+		if err != nil {
+			return err
+		}
+		if ok {
+			added++
+		}
 	}
-	if added {
-		fmt.Printf("Revoked %q (serial %s). The server rejects it on the next connection.\n", *name, serial.Text(16))
-	} else {
-		fmt.Printf("%q (serial %s) was already revoked.\n", *name, serial.Text(16))
+	switch {
+	case added == 0:
+		fmt.Printf("%q was already revoked (%d certificate(s)).\n", *name, len(serials))
+	case len(serials) == 1:
+		fmt.Printf("Revoked %q (serial %s). The server rejects it on the next connection.\n", *name, serials[0].Text(16))
+	default:
+		fmt.Printf("Revoked %q — %d certificate(s), %d newly. The server rejects them on the next connection.\n",
+			*name, len(serials), added)
 	}
 	return nil
 }
 
-// cmdUnrevoke removes a client from the deny-list (undo a revoke).
+// cmdUnrevoke undoes a revoke for the client's *current* certificate. It
+// deliberately does not lift revocations on superseded certificates — those
+// were retired by a re-issue, and restoring them would hand a replaced (often
+// leaked) profile its access back.
 func cmdUnrevoke(args []string) error {
 	fs := flag.NewFlagSet("unrevoke", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir, "CA directory")
@@ -218,14 +234,18 @@ func cmdUnrevoke(args []string) error {
 	if strings.ContainsAny(*name, `/\`) || *name == "." || *name == ".." {
 		return fmt.Errorf("-name must be a plain client name (no path separators)")
 	}
-	n, err := revoke.New(filepath.Join(*dir, "revoked.json")).Remove(*name)
+	serial, err := ca.ClientSerial(*dir, *name)
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		fmt.Printf("%q had no revoked certificates.\n", *name)
+	removed, err := revoke.New(filepath.Join(*dir, "revoked.json")).RemoveSerial(serial)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		fmt.Printf("%q's current certificate (serial %s) was not revoked.\n", *name, serial.Text(16))
 	} else {
-		fmt.Printf("Un-revoked %q (%d certificate(s)).\n", *name, n)
+		fmt.Printf("Un-revoked %q (serial %s).\n", *name, serial.Text(16))
 	}
 	return nil
 }

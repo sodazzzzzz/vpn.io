@@ -93,3 +93,52 @@ func TestCheckerEmptyPathDisabled(t *testing.T) {
 		t.Fatalf("empty path = %v, %v; want false, nil", yes, err)
 	}
 }
+
+// Un-revoking must lift exactly one certificate. Removing by name would also
+// clear the revocations a re-issue applied to superseded certificates, handing
+// a replaced (typically leaked) profile its access back.
+func TestRemoveSerialLeavesOtherCertsOfSameNameRevoked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "revoked.json")
+	s := New(path)
+
+	leaked := big.NewInt(0xaaaa)
+	current := big.NewInt(0xbbbb)
+	for _, serial := range []*big.Int{leaked, current} {
+		if _, err := s.Add(serial, "alice"); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	removed, err := s.RemoveSerial(current)
+	if err != nil {
+		t.Fatalf("RemoveSerial: %v", err)
+	}
+	if !removed {
+		t.Fatal("RemoveSerial reported nothing removed")
+	}
+
+	c := NewChecker(path)
+	yes, err := c.IsRevoked(leaked)
+	if err != nil {
+		t.Fatalf("IsRevoked(leaked): %v", err)
+	}
+	if !yes {
+		t.Error("un-revoking the current cert also lifted the leaked one")
+	}
+	yes, err = c.IsRevoked(current)
+	if err != nil {
+		t.Fatalf("IsRevoked(current): %v", err)
+	}
+	if yes {
+		t.Error("current cert is still revoked after RemoveSerial")
+	}
+
+	// Removing something that isn't on the list is not an error.
+	removed, err = s.RemoveSerial(big.NewInt(0xcccc))
+	if err != nil {
+		t.Fatalf("RemoveSerial(absent): %v", err)
+	}
+	if removed {
+		t.Error("RemoveSerial reported a removal for an absent serial")
+	}
+}

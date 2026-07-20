@@ -155,10 +155,12 @@ With `-owner <your-telegram-id>` set, you can manage clients by messaging the
 bot — no SSH. In a **private** chat with the bot:
 
 - **`/whoami`** → your Telegram ID (set it as `-owner` and restart the bot).
-- **`/invite alice`** → a single-use token for `alice`.
+- **`/invite alice`** → a single-use token for `alice`. Re-inviting a name that
+  already has a profile replaces it: the old one is revoked and stops working.
 - **`/revoke alice`** → cut alice off (the server drops her on her next
   connection — see [SERVER.md](SERVER.md) for `-revoked`).
-- **`/unrevoke alice`** → undo a revoke.
+- **`/unrevoke alice`** → undo a revoke (alice's current profile only — profiles
+  replaced by a later `/invite alice` stay cut off).
 - **`/revoked`** → list revoked clients.
 
 These work only for that one Telegram ID and only in a private chat (a token or
