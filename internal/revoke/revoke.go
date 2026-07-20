@@ -4,10 +4,12 @@
 // callback — and hot-reloads the file when it changes, so a revocation takes
 // effect without a restart.
 //
-// The list is keyed by serial, not name: revoking blocks the exact issued
-// certificate, and re-issuing the same name (a fresh serial) is not revoked.
-// The file isn't secret (a serial reveals nothing), but it is written
-// atomically so the server never reads a half-written file.
+// The list is keyed by serial, not name: an entry blocks one exact certificate.
+// Operations that mean "this client", such as revoking or re-issuing a name,
+// therefore have to enumerate that name's serials themselves — package ca keeps
+// the issuance ledger for that. The file isn't secret (a serial reveals
+// nothing), but it is written atomically so the server never reads a
+// half-written file.
 package revoke
 
 import (

@@ -168,10 +168,14 @@ client list is never printed into a group); everyone else just gets the
 greeting. Revocations land in the same `revoked.json` the server enforces, so
 point the server's `-revoked` at the CA directory's `revoked.json`.
 
-`/revoke` blocks the **issued certificate** (by serial). A later `/invite alice`
-for the same name issues a *new* certificate that is not on the deny-list — so
-re-inviting a revoked name restores access (use a different name if you don't
-want that).
+`/revoke alice` blocks **every certificate ever issued** to that name, including
+ones replaced by an earlier re-invite — the CA keeps an append-only record of
+its issuances in `issued.json` so none of them can go missing.
+
+A later `/invite alice` deliberately mints a *new* certificate, which is live:
+re-inviting is how you give someone a replacement profile. It also revokes the
+profile it replaces, so a leaked `.vpnio` stops working the moment you re-invite
+that name — one name, one live profile.
 
 ## Notes
 
