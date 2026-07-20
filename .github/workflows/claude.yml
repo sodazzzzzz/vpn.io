@@ -15,12 +15,26 @@ on:
 
 jobs:
   claude:
-    # Only run when the body/title actually mentions @claude.
+    # Two gates, both required.
+    #
+    # 1. The body/title actually mentions @claude.
+    # 2. The author is the repository owner.
+    #
+    # Gate 2 is a security boundary, not tidiness. This job hands the agent
+    # `contents: write`, and the text that reaches it is attacker-controlled:
+    # anyone able to open an issue or leave a comment would otherwise be able
+    # to steer it via the issue body ("@claude ... now run git push ...") into
+    # writing to the repository. Today only the repo's privacy limits who that
+    # is; the day it goes public the gate is the only thing left.
+    #
+    # OWNER is deliberately narrow — widening to
+    # `contains(fromJSON('["OWNER","COLLABORATOR"]'), ...)` grants every
+    # collaborator write-capable runs, so do it consciously.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && github.event.comment.author_association == 'OWNER') ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && github.event.comment.author_association == 'OWNER') ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && github.event.review.author_association == 'OWNER') ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) && github.event.issue.author_association == 'OWNER')
     runs-on: ubuntu-latest
     permissions:
       contents: write
