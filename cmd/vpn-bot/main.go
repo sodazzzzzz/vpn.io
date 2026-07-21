@@ -391,14 +391,23 @@ func handleRevokeCommand(bot *tgbotapi.BotAPI, authority *ca.CA, store *revoke.S
 	who := userLabel(msg.From)
 
 	if msg.Command() == "unrevoke" {
-		n, err := store.Remove(name)
+		// Only the current certificate. Certificates superseded by a re-issue
+		// were retired on purpose — usually because that profile leaked — and
+		// un-revoking by name would hand them their access back.
+		serial, err := ca.ClientSerial(authority.Dir, name)
+		if err != nil {
+			log.Printf("/unrevoke %q: %v", name, err)
+			reply(bot, msg.Chat.ID, fmt.Sprintf("No issued client named %q (or its certificate is unreadable).", name))
+			return
+		}
+		removed, err := store.RemoveSerial(serial)
 		if err != nil {
 			log.Printf("/unrevoke %q: %v", name, err)
 			reply(bot, msg.Chat.ID, "Couldn't un-revoke — check the logs.")
 			return
 		}
-		if n == 0 {
-			reply(bot, msg.Chat.ID, fmt.Sprintf("%q had no revoked certificates.", name))
+		if !removed {
+			reply(bot, msg.Chat.ID, fmt.Sprintf("%q's current profile was not revoked.", name))
 			return
 		}
 		log.Printf("un-revoked %q via /unrevoke from %s", name, who)
@@ -406,24 +415,32 @@ func handleRevokeCommand(bot *tgbotapi.BotAPI, authority *ca.CA, store *revoke.S
 		return
 	}
 
-	// /revoke: look up the issued cert's serial and add it to the deny-list.
-	serial, err := ca.ClientSerial(authority.Dir, name)
+	// /revoke: deny every certificate ever issued to this name, not just the
+	// current one — a re-issue supersedes the old cert but leaves it valid
+	// against the CA, and its serial survives only in the issuance ledger.
+	serials, err := ca.ClientSerials(authority.Dir, name)
 	if err != nil {
 		log.Printf("/revoke %q: %v", name, err)
 		reply(bot, msg.Chat.ID, fmt.Sprintf("No issued client named %q (or its certificate is unreadable).", name))
 		return
 	}
-	added, err := store.Add(serial, name)
-	if err != nil {
-		log.Printf("/revoke add %q: %v", name, err)
-		reply(bot, msg.Chat.ID, "Couldn't revoke — check the logs.")
-		return
+	added := 0
+	for _, serial := range serials {
+		ok, err := store.Add(serial, name)
+		if err != nil {
+			log.Printf("/revoke add %q: %v", name, err)
+			reply(bot, msg.Chat.ID, "Couldn't revoke — check the logs.")
+			return
+		}
+		if ok {
+			added++
+		}
 	}
-	if !added {
+	if added == 0 {
 		reply(bot, msg.Chat.ID, fmt.Sprintf("%q was already revoked.", name))
 		return
 	}
-	log.Printf("revoked %q via /revoke from %s", name, who)
+	log.Printf("revoked %q via /revoke from %s (%d certificate(s), %d newly)", name, who, len(serials), added)
 	reply(bot, msg.Chat.ID, fmt.Sprintf("Revoked %q. The server cuts it off on its next connection.", name))
 }
 

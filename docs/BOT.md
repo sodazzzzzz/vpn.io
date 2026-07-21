@@ -155,10 +155,12 @@ With `-owner <your-telegram-id>` set, you can manage clients by messaging the
 bot — no SSH. In a **private** chat with the bot:
 
 - **`/whoami`** → your Telegram ID (set it as `-owner` and restart the bot).
-- **`/invite alice`** → a single-use token for `alice`.
+- **`/invite alice`** → a single-use token for `alice`. Re-inviting a name that
+  already has a profile replaces it: the old one is revoked and stops working.
 - **`/revoke alice`** → cut alice off (the server drops her on her next
   connection — see [SERVER.md](SERVER.md) for `-revoked`).
-- **`/unrevoke alice`** → undo a revoke.
+- **`/unrevoke alice`** → undo a revoke (alice's current profile only — profiles
+  replaced by a later `/invite alice` stay cut off).
 - **`/revoked`** → list revoked clients.
 
 These work only for that one Telegram ID and only in a private chat (a token or
@@ -166,10 +168,14 @@ client list is never printed into a group); everyone else just gets the
 greeting. Revocations land in the same `revoked.json` the server enforces, so
 point the server's `-revoked` at the CA directory's `revoked.json`.
 
-`/revoke` blocks the **issued certificate** (by serial). A later `/invite alice`
-for the same name issues a *new* certificate that is not on the deny-list — so
-re-inviting a revoked name restores access (use a different name if you don't
-want that).
+`/revoke alice` blocks **every certificate ever issued** to that name, including
+ones replaced by an earlier re-invite — the CA keeps an append-only record of
+its issuances in `issued.json` so none of them can go missing.
+
+A later `/invite alice` deliberately mints a *new* certificate, which is live:
+re-inviting is how you give someone a replacement profile. It also revokes the
+profile it replaces, so a leaked `.vpnio` stops working the moment you re-invite
+that name — one name, one live profile.
 
 ## Notes
 
