@@ -165,6 +165,27 @@ func (a *App) Status() (control.Status, error) { return a.cl.Status() }
 // Disconnect tears the tunnel down (idempotent: a no-op when disconnected).
 func (a *App) Disconnect() error { return a.cl.Disconnect() }
 
+// reportTrayError surfaces an error from a tray menu action. Tray actions run
+// off the menu thread with no window in focus, so a swallowed error left the
+// user with no feedback at all — a click on Connect/Disconnect did nothing
+// visible when the helper was down or creds were rejected (#136). Log it and
+// show a native error dialog. Best-effort: if the dialog can't be shown (no
+// window context yet), the log still has it.
+func (a *App) reportTrayError(title string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("vpn-gui: %s: %v", title, err)
+	if a.ctx == nil {
+		return
+	}
+	_, _ = wruntime.MessageDialog(a.ctx, wruntime.MessageDialogOptions{
+		Type:    wruntime.ErrorDialog,
+		Title:   title,
+		Message: err.Error(),
+	})
+}
+
 // PickCredential opens a native file dialog for one credential slot (ca/cert/
 // key), reads the chosen file, sanity-checks that it is PEM, and stores the
 // bytes in the draft. The bytes never leave Go. A cancelled dialog returns

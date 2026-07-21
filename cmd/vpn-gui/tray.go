@@ -90,12 +90,22 @@ func (t *tray) onReady() {
 		// Connecting needs a staged profile; without one, just open the window
 		// so the user can import. IPC calls run off the menu thread.
 		if t.app.Profile().HasProfile {
-			go func() { _, _ = t.app.Reconnect() }()
+			go func() {
+				if _, err := t.app.Reconnect(); err != nil {
+					t.app.reportTrayError("Connect failed", err)
+				}
+			}()
 		} else {
 			t.showWindow()
 		}
 	})
-	t.mDisconnect.Click(func() { go func() { _ = t.app.Disconnect() }() })
+	t.mDisconnect.Click(func() {
+		go func() {
+			if err := t.app.Disconnect(); err != nil {
+				t.app.reportTrayError("Disconnect failed", err)
+			}
+		}()
+	})
 	mShow.Click(t.showWindow)
 	mQuit.Click(func() { t.requestQuit() })
 
