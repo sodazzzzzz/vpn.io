@@ -85,13 +85,25 @@ func (l *connLimiter) release(ip string, penalize bool) {
 			l.perIP[ip] = n
 		}
 	}
-	// Only delay the release when both caps are active: the per-IP cap is what
-	// the throttle actually bites against, and the global cap keeps the perIP
-	// map bounded (sum of its values == total <= maxTotal). Without both, hold
-	// nothing — there is no bound to protect and the map could grow unbounded.
-	if penalize && l.failPenalty > 0 && l.maxPerIP > 0 && l.maxTotal > 0 {
+	// Only delay the release when the throttle can actually bite (see
+	// throttleActive): the per-IP cap is what it holds slots against, and the
+	// global cap keeps the perIP map bounded (sum of its values == total <=
+	// maxTotal). Without both, hold nothing — there is no bound to protect and
+	// the map could grow unbounded.
+	if penalize && l.throttleActive() {
 		time.AfterFunc(l.failPenalty, dec)
 	} else {
 		dec()
 	}
+}
+
+// throttleActive reports whether the failed-handshake throttle can actually
+// slow a flood. It needs a per-IP cap to hold slots against, a global cap to
+// keep the perIP map bounded, and a non-zero penalty window; missing any of
+// them, a failed handshake is freed immediately and fast fail-retry churn isn't
+// slowed at all. This is the single source of truth for that condition — the
+// release delay above and the startup warning in New both consult it, so they
+// can't drift apart.
+func (l *connLimiter) throttleActive() bool {
+	return l.maxPerIP > 0 && l.maxTotal > 0 && l.failPenalty > 0
 }

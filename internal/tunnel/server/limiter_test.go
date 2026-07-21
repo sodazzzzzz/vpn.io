@@ -125,3 +125,30 @@ func TestHost(t *testing.T) {
 		}
 	}
 }
+
+// The failed-handshake throttle only bites with a per-IP cap, a global cap and
+// a penalty window all set; zeroing any one silently disables it (and triggers
+// the startup warning in New). cmd/vpn-server defaults the caps on (16/256).
+func TestThrottleActive(t *testing.T) {
+	cases := []struct {
+		name               string
+		maxPerIP, maxTotal int
+		penalty            time.Duration
+		want               bool
+	}{
+		{"all set (vpn-server defaults)", 16, 256, 2 * time.Second, true},
+		{"no per-IP cap", 0, 256, 2 * time.Second, false},
+		{"no global cap", 16, 0, 2 * time.Second, false},
+		{"no penalty window", 16, 256, 0, false},
+		{"struct zero value", 0, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newConnLimiter(tc.maxPerIP, tc.maxTotal, tc.penalty)
+			if got := l.throttleActive(); got != tc.want {
+				t.Fatalf("throttleActive(perIP=%d, total=%d, penalty=%v) = %v, want %v",
+					tc.maxPerIP, tc.maxTotal, tc.penalty, got, tc.want)
+			}
+		})
+	}
+}
