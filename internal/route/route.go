@@ -184,15 +184,61 @@ func (m *Manager) RefreshServerPinhole() error {
 	m.pinholeGW = gw
 
 	// Keep the rollback record pointing at the live pin-hole so shutdown removes
-	// the right route.
+	// the right route. If there's no record yet — the server IP just changed via
+	// PinServer — add one so the new pin-hole is torn down on exit.
+	found := false
 	for i := range m.installed {
 		if m.installed[i].prefix == pinhole {
 			m.installed[i].gw = gw
+			found = true
 			break
 		}
 	}
+	if !found {
+		m.installed = append(m.installed, installedKey{prefix: pinhole, gw: gw})
+	}
 	m.log.Debug("server pin-hole refreshed", "server", m.server, "via", gw)
 	return nil
+}
+
+// PinServer re-pins the host route to the VPN server, adopting a NEW target IP
+// when the server's DNS name now resolves to a different address (DDNS,
+// failover, round-robin). Like RefreshServerPinhole it also re-asserts the route
+// through the current default gateway, so one call before each reconnect dial
+// handles both a moved server and a changed local gateway. Without this, a
+// reconnect dials the new IP while the pin-hole still points at the old one, and
+// the new IP falls under the tunnel split-routes and black-holes (#126).
+func (m *Manager) PinServer(server netip.Addr) error {
+	if !server.IsValid() {
+		return fmt.Errorf("route: PinServer given invalid server IP")
+	}
+	if server != m.server {
+		// Tear down the old pin-hole and its rollback record before adopting the
+		// new target, so we don't leak a host route to an address we no longer
+		// use. A delete failure is expected if the OS already flushed it.
+		if m.server.IsValid() && m.pinholeGW.IsValid() {
+			old := netip.PrefixFrom(m.server, m.server.BitLen())
+			if err := m.runner.DelRoute(old, m.pinholeGW, ""); err != nil {
+				m.log.Debug("PinServer: old pin-hole delete failed (may be already flushed)", "old", old, "err", err)
+			}
+			m.forgetInstalled(old)
+		}
+		m.log.Info("server address changed; re-pinning", "old", m.server, "new", server)
+		m.server = server
+		m.pinholeGW = netip.Addr{} // the old gateway no longer applies to the new target
+	}
+	return m.RefreshServerPinhole()
+}
+
+// forgetInstalled drops the rollback record for prefix, if present.
+func (m *Manager) forgetInstalled(prefix netip.Prefix) {
+	kept := m.installed[:0]
+	for _, k := range m.installed {
+		if k.prefix != prefix {
+			kept = append(kept, k)
+		}
+	}
+	m.installed = kept
 }
 
 func (m *Manager) add(p netip.Prefix, gw netip.Addr, iface string) error {

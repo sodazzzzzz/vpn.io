@@ -354,3 +354,83 @@ func TestInstall_SkipsNonIPv4Pushes(t *testing.T) {
 		t.Fatalf("calls mismatch:\n got=%+v\nwant=%+v", r.calls, want)
 	}
 }
+
+// When the server's DNS name resolves to a new address, PinServer tears down
+// the old pin-hole and installs one for the new IP via the current gateway
+// (#126). The new pin-hole joins the rollback set; the old one is forgotten.
+func TestPinServer_RepointsOnChangedIP(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	r.calls = nil // ignore install calls; focus on the re-point
+
+	if err := m.PinServer(netip.MustParseAddr("203.0.113.9")); err != nil {
+		t.Fatalf("PinServer: %v", err)
+	}
+	want := []call{
+		{op: "del", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
+		{op: "add", prefix: netip.MustParsePrefix("203.0.113.9/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("PinServer calls:\n got=%+v\nwant=%+v", r.calls, want)
+	}
+
+	// Remove must tear down the NEW pin-hole and not the forgotten old one.
+	r.calls = nil
+	m.Remove()
+	var sawNew, sawOld bool
+	for _, c := range r.calls {
+		switch c.prefix {
+		case netip.MustParsePrefix("203.0.113.9/32"):
+			sawNew = true
+		case netip.MustParsePrefix("203.0.113.5/32"):
+			sawOld = true
+		}
+	}
+	if !sawNew {
+		t.Error("Remove did not tear down the new pin-hole 203.0.113.9/32")
+	}
+	if sawOld {
+		t.Error("Remove touched the old pin-hole 203.0.113.5/32 (should have been forgotten)")
+	}
+}
+
+// PinServer with the unchanged IP is just a refresh: the pin-hole is re-asserted
+// via the current gateway, with no change of target.
+func TestPinServer_SameIPJustRefreshes(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	r.calls = nil
+
+	if err := m.PinServer(netip.MustParseAddr("203.0.113.5")); err != nil {
+		t.Fatalf("PinServer: %v", err)
+	}
+	var adds int
+	for _, c := range r.calls {
+		if c.op == "add" && c.prefix != netip.MustParsePrefix("203.0.113.5/32") {
+			t.Errorf("unexpected add of %v", c.prefix)
+		}
+		if c.op == "add" {
+			adds++
+		}
+		if c.op == "del" && c.prefix != netip.MustParsePrefix("203.0.113.5/32") {
+			t.Errorf("unexpected delete of %v", c.prefix)
+		}
+	}
+	if adds != 1 {
+		t.Errorf("want exactly one re-add of the pin-hole, got %d", adds)
+	}
+}
