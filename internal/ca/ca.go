@@ -111,9 +111,23 @@ func (c *CA) IssueServer(commonName string, dnsNames []string, ips []net.IP) err
 	return c.issueTo(tpl, filepath.Join(c.Dir, "server"), "server")
 }
 
+// checkClientName rejects names that would escape <Dir>/clients/ once turned
+// into a path. The check belongs here rather than in the callers: this package
+// is the security boundary for key material, and a name like "../server/server"
+// would otherwise overwrite the server's certificate and private key.
+func checkClientName(name string) error {
+	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
+		return fmt.Errorf("ca: invalid client name %q", name)
+	}
+	return nil
+}
+
 // IssueClient creates a client certificate identified by name, written to
 // <Dir>/clients/<name>.{crt,key}.
 func (c *CA) IssueClient(name string) error {
+	if err := checkClientName(name); err != nil {
+		return err
+	}
 	tpl, err := baseTemplate(name, clientValidity)
 	if err != nil {
 		return err
@@ -128,10 +142,8 @@ func (c *CA) IssueClient(name string) error {
 // reads only the public cert, so it needs no CA key (callers that just revoke
 // don't have to load the whole CA).
 func ClientSerial(dir, name string) (*big.Int, error) {
-	// name becomes a path under clients/ — reject anything that could escape it,
-	// so an exported caller can't be tricked into reading outside the directory.
-	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
-		return nil, fmt.Errorf("ca: invalid client name %q", name)
+	if err := checkClientName(name); err != nil {
+		return nil, err
 	}
 	cert, err := readCert(filepath.Join(dir, "clients", name+".crt"))
 	if err != nil {
@@ -160,6 +172,11 @@ func (c *CA) ListClients() ([]string, error) {
 }
 
 func (c *CA) issueTo(tpl *x509.Certificate, dir, basename string) error {
+	// Last line of defence before key material hits the disk: whatever the
+	// caller passed, it must name a file inside dir and nothing else.
+	if basename == "" || basename == "." || basename == ".." || basename != filepath.Base(basename) {
+		return fmt.Errorf("ca: invalid certificate basename %q", basename)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

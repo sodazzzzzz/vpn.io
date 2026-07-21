@@ -339,6 +339,51 @@ func TestServer_RejectsRevokedClient(t *testing.T) {
 	}
 }
 
+// A client that cached a session ticket while it was still authorized must not
+// be able to resume its way past the deny-list after revocation.
+func TestServer_RejectsRevokedClientOnResumedSession(t *testing.T) {
+	revokedFile := filepath.Join(t.TempDir(), "revoked.json")
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.RevokedFile = revokedFile })
+	defer h.shutdown()
+
+	cert := h.issueClient("alice")
+	cache := tls.NewLRUClientSessionCache(0)
+
+	// First connection: full handshake. Reading the assigned IP also gets us
+	// past the point where the server hands out its session tickets.
+	conn, err := h.dialResuming([]tls.Certificate{cert}, cache)
+	if err != nil {
+		t.Fatalf("alice should connect before revocation: %v", err)
+	}
+	h.expectAssignIP(conn)
+	_ = conn.Close()
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse alice cert: %v", err)
+	}
+	if _, err := revoke.New(revokedFile).Add(leaf.SerialNumber, "alice"); err != nil {
+		t.Fatalf("revoke alice: %v", err)
+	}
+
+	// Second connection reuses the cached ticket. As in the non-resumed case
+	// the dial itself may succeed and the rejection surfaces on the first read.
+	conn, err = h.dialResuming([]tls.Certificate{cert}, cache)
+	if err == nil {
+		if !conn.ConnectionState().DidResume {
+			_ = conn.Close()
+			t.Fatal("session was not resumed — test would pass vacuously")
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err = tunnel.ReadPacket(conn)
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("revoked alice was accepted on a resumed session, but should be rejected")
+	}
+}
+
 func TestServer_AntiSpoofDropsWrongSrc(t *testing.T) {
 	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0")
 	defer h.shutdown()
@@ -555,6 +600,22 @@ func TestServer_RateLimitPerIP(t *testing.T) {
 
 // dialAndAssign connects a freshly-issued client and consumes its AssignIP,
 // returning the live connection.
+// dialResuming is dial with a caller-supplied session cache, so a second dial
+// with the same cache resumes the first session instead of running a full
+// handshake.
+func (h *harness) dialResuming(clientCerts []tls.Certificate, cache tls.ClientSessionCache) (*tls.Conn, error) {
+	h.t.Helper()
+	cfg := &tls.Config{
+		RootCAs:            h.caPool,
+		Certificates:       clientCerts,
+		ServerName:         "localhost",
+		MinVersion:         tls.VersionTLS13,
+		ClientSessionCache: cache,
+	}
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	return tls.DialWithDialer(dialer, "tcp", h.addr, cfg)
+}
+
 func (h *harness) dialAndAssign(name string) *tls.Conn {
 	h.t.Helper()
 	cert := h.issueClient(name)

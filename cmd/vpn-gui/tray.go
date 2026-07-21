@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/energye/systray"
@@ -44,6 +45,12 @@ const trayPollInterval = 2 * time.Second
 // daemon through the App it points back to.
 type tray struct {
 	app *App
+
+	// quitting marks that a shutdown is under way, so onBeforeClose knows to
+	// let it through instead of cancelling it. Atomic rather than guarded by
+	// mu: it is read from inside onBeforeClose, which Wails may invoke on the
+	// main thread while a tray callback is still on the way out.
+	quitting atomic.Bool
 
 	mu         sync.Mutex
 	winVisible bool   // best-effort track of the window's visibility
@@ -90,7 +97,7 @@ func (t *tray) onReady() {
 	})
 	t.mDisconnect.Click(func() { go func() { _ = t.app.Disconnect() }() })
 	mShow.Click(t.showWindow)
-	mQuit.Click(func() { wruntime.Quit(t.app.ctx) })
+	mQuit.Click(func() { t.requestQuit() })
 
 	systray.SetOnClick(func(systray.IMenu) { t.toggleWindow() })
 	systray.SetOnRClick(func(menu systray.IMenu) { _ = menu.ShowMenu() })
@@ -140,19 +147,57 @@ func (t *tray) showWindow() { t.setWindow(true) }
 
 func (t *tray) toggleWindow() { t.setWindow(!t.visible()) }
 
-// onBeforeClose decides what the window's close button does. Both branches
-// return true to cancel Wails' own close, so there is a single, explicit exit
-// path. On macOS the app lives in the menu bar, so close just hides the window.
-// On Windows/Linux users expect the X to quit, so we request a graceful Quit
-// (the tray's "Quit" did the same) — otherwise the app lingers with no obvious
-// way out.
+// requestQuit starts a graceful shutdown. Used by the tray's "Quit" item — on
+// macOS the only way out, since the window's close button just hides.
+//
+// The flag must be set *before* calling Quit: runtime.Quit invokes
+// OnBeforeClose and aborts if it returns true, so without it the tray's Quit
+// merely hid the window and the process had to be killed from Activity Monitor.
+// Swap also makes a second Quit a no-op while one is already running.
+func (t *tray) requestQuit() {
+	if t.quitting.Swap(true) {
+		return
+	}
+	wruntime.Quit(t.app.ctx)
+}
+
+// onBeforeClose decides what the window's close button does, and is also the
+// gate every quit passes through — Wails calls it from runtime.Quit as well.
+// Returning true cancels the close; false lets it proceed.
 func (t *tray) onBeforeClose() bool {
-	if quitOnWindowClose() {
-		wruntime.Quit(t.app.ctx)
-		return true
+	cancel := cancelClose(t.quitting.Load(), quitOnWindowClose())
+	if !cancel {
+		// Whether this came from the tray's Quit or the X on Windows/Linux, the
+		// app is going down — remember it so a second pass through here (Wails
+		// calls this once per Quit) doesn't fall into the hide branch.
+		t.quitting.Store(true)
+		return false
 	}
 	t.setWindow(false)
 	return true
+}
+
+// cancelClose reports whether a close request should be cancelled, given
+// whether a quit is already under way and whether this platform treats the
+// window's close button as "quit".
+//
+// The subtlety is that Wails routes *both* meanings through OnBeforeClose, and
+// cancelling is the default-looking answer that happens to be wrong for a quit:
+//
+//   - quitting: runtime.Quit calls OnBeforeClose and aborts if it returns true.
+//     The tray's "Quit" used to return true here, so on macOS — where it is the
+//     only way out — it just hid the window and the process survived.
+//
+//   - quitOnWindowClose (Windows/Linux): the close handler *already* called
+//     Quit, which is what called us. Answering "cancel, and by the way please
+//     Quit" re-entered that sequence: on Windows synchronously, until the stack
+//     overflowed and killed the process before WebView2 teardown and
+//     profile-save could run; on Linux by spawning a goroutine per round.
+//
+//   - otherwise (macOS): the app lives in the menu bar, so closing the window
+//     genuinely means "hide" and cancelling is correct.
+func cancelClose(quitting, quitOnWindowClose bool) bool {
+	return !quitting && !quitOnWindowClose
 }
 
 // setWindow shows or hides the window, keeping the tracked visibility and the
