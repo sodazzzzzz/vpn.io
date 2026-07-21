@@ -14,10 +14,14 @@ type applyCall struct {
 }
 
 type mockRunner struct {
-	applyCalls   []applyCall
-	restoreCalls int
-	applyErr     error
-	restoreErr   error
+	applyCalls     []applyCall
+	restoreCalls   int
+	clearCalls     int
+	reconcileCalls int
+	applyErr       error
+	restoreErr     error
+	clearErr       error
+	reconcileErr   error
 }
 
 func (m *mockRunner) Apply(servers []string, iface string) error {
@@ -31,6 +35,16 @@ func (m *mockRunner) Apply(servers []string, iface string) error {
 func (m *mockRunner) Restore() error {
 	m.restoreCalls++
 	return m.restoreErr
+}
+
+func (m *mockRunner) Clear(*slog.Logger) error {
+	m.clearCalls++
+	return m.clearErr
+}
+
+func (m *mockRunner) Reconcile(*slog.Logger) error {
+	m.reconcileCalls++
+	return m.reconcileErr
 }
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

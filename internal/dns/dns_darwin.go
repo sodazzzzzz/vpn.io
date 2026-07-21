@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/govpn/internal/execx"
@@ -65,6 +66,34 @@ func (d *darwinRunner) Restore() error {
 	d.saved = nil
 	return firstErr
 }
+
+// Clear resets every enabled network service's DNS to automatic (DHCP) without
+// a saved snapshot — recovering a host a crashed client left pointing at a dead
+// tunnel resolver (vpn-client --clear-dns). It does drop a pre-existing MANUAL
+// DNS config, which is acceptable for a recovery command run precisely because
+// DNS is already broken.
+func (d *darwinRunner) Clear(log *slog.Logger) error {
+	svcs, err := d.listEnabledServices()
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, svc := range svcs {
+		if err := d.setDNS(svc, []string{"empty"}); err != nil {
+			log.Warn("dns: resetting service to automatic failed", "service", svc, "err", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("clear DNS for %q: %w", svc, err)
+			}
+		}
+	}
+	return firstErr
+}
+
+// Reconcile is a no-op on macOS: nothing durable records that a prior run set
+// DNS, so at startup we can't tell our leftover config from a user's manual one
+// and must not touch it. Recovery is manual via --clear-dns for now; a durable
+// per-service snapshot for auto-heal is a follow-up.
+func (d *darwinRunner) Reconcile(_ *slog.Logger) error { return nil }
 
 // listEnabledServices runs `networksetup -listallnetworkservices` and
 // returns active services (lines starting with "*" are disabled).
