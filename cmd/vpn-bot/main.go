@@ -63,6 +63,8 @@ func main() {
 	switch os.Args[1] {
 	case "token":
 		err = cmdToken(os.Args[2:])
+	case "list":
+		err = cmdList(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
 	case "-h", "--help", "help":
@@ -86,13 +88,16 @@ Commands:
   token -name NAME [-store FILE]
         generate a one-time invite token for a client and print it
 
+  list [-store FILE]
+        list issued invites (name + status: PENDING/EXPIRED/used); no secrets
+
   serve -telegram-token TOKEN -dir CA_DIR -server HOST:PORT [-server-name S] [-store FILE] [-installers DIR] [-owner ID]
         run the bot: redeem invite tokens and deliver .vpnio profiles.
         With -installers DIR, also offer the app installer for the user's OS
         (*.exe / *.pkg / *.deb found in DIR) via inline buttons.
         With -owner ID, that Telegram user can manage clients in-chat instead
-        of this CLI: /invite <name>, /revoke <name>, /unrevoke <name>, /revoked.
-        Anyone can /whoami to learn their own ID.
+        of this CLI: /invite <name>, /invites, /revoke <name>, /unrevoke <name>,
+        /revoked. Anyone can /whoami to learn their own ID.
 
 Defaults: -dir ./ca-data, -store ./invite-tokens.json
 `)
@@ -113,6 +118,24 @@ func cmdToken(args []string) error {
 		return err
 	}
 	fmt.Printf("Invite token for %q:\n\n  %s\n\nSend it to the person; they message it to the bot to receive their profile.\n", *name, tok.Value)
+	return nil
+}
+
+// cmdList prints issued invites (name + status) from the store — the CLI
+// counterpart of the bot's /invites, for reading the list over SSH without
+// grepping the JSON. Token secrets are never printed. Expiry labels use the
+// default TTL; the bot's /invites uses the running serve's -invite-ttl.
+func cmdList(args []string) error {
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	storePath := fs.String("store", defaultStore, "invite token store file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	tokens, err := invite.New(*storePath).List()
+	if err != nil {
+		return err
+	}
+	fmt.Print(formatInviteList(tokens, invite.DefaultInviteTTL, time.Now()))
 	return nil
 }
 
@@ -340,6 +363,16 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 			reply(bot, msg.Chat.ID, helpText)
 		}
 		return
+	case "invites":
+		// Same owner-only, private-chat gate: the list names clients and their
+		// redemption status, so it stays out of groups — and never prints a token
+		// secret (see formatInviteList).
+		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
+			handleInvitesCommand(bot, store, msg)
+		} else {
+			reply(bot, msg.Chat.ID, helpText)
+		}
+		return
 	}
 	// Everything below treats the text as a candidate invite token, and a
 	// successful redemption replies with a .vpnio bundle that carries the
@@ -430,6 +463,45 @@ func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Messa
 	// Audit: a minted token is a credential, like an issued profile.
 	log.Printf("minted invite token for %q via /invite from %s", name, userLabel(msg.From))
 	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, tok.Value))
+}
+
+// handleInvitesCommand answers the owner's /invites with the list of issued
+// tokens and their status. The caller has verified owner + private chat.
+func handleInvitesCommand(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message) {
+	tokens, err := store.List()
+	if err != nil {
+		log.Printf("/invites list: %v", err)
+		reply(bot, msg.Chat.ID, "Couldn't read the invite list — check the logs.")
+		return
+	}
+	reply(bot, msg.Chat.ID, formatInviteList(tokens, store.TTL, time.Now()))
+}
+
+// formatInviteList renders the issued-invite list for /invites and `vpn-bot
+// list`: client name, status (PENDING / EXPIRED / used-by-whom) and dates. It
+// deliberately OMITS Token.Value — possession of an unused value is a live
+// credential, so it must never be echoed into a chat or a terminal scrollback.
+func formatInviteList(tokens []invite.Token, ttl time.Duration, now time.Time) string {
+	if len(tokens) == 0 {
+		return "No invites have been issued yet."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Issued invites (%d):\n", len(tokens))
+	for _, t := range tokens {
+		switch {
+		case t.Used:
+			who := t.UsedBy
+			if who == "" {
+				who = "unknown"
+			}
+			fmt.Fprintf(&b, "• %s — used by %s on %s\n", t.ClientName, who, t.UsedAt.Format("2006-01-02"))
+		case invite.Expired(t, ttl, now):
+			fmt.Fprintf(&b, "• %s — EXPIRED (issued %s)\n", t.ClientName, t.Created.Format("2006-01-02"))
+		default:
+			fmt.Fprintf(&b, "• %s — PENDING (issued %s)\n", t.ClientName, t.Created.Format("2006-01-02"))
+		}
+	}
+	return b.String()
 }
 
 // handleRevokeCommand serves the owner's /revoke, /unrevoke and /revoked against
