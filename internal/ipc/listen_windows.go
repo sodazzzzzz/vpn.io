@@ -20,9 +20,13 @@ import (
 //
 // LIMITATION: IU (NT AUTHORITY\INTERACTIVE) covers EVERY interactive logon
 // session, so on a multi-user host (e.g. a Windows Server with several RDP
-// users) any logged-in user could drive the tunnel. That is acceptable for the
-// single-user personal machines this targets; tightening to a specific user SID
-// is a follow-up, alongside the dial-side squat check.
+// users) any logged-in user could connect and drive the tunnel — tearing down
+// or hijacking another user's session. It cannot leak the private key (that
+// only ever travels client→server), so it is a weaker problem than the squat
+// it sits next to, and it is acceptable on the single-user personal machines
+// this targets. Narrowing it to one user SID needs a way to learn which user
+// that is, which the helper — started at boot as a service, before anyone logs
+// in — does not have today; it is tracked separately.
 //
 // The unix Policy (uid/gid) does not apply on Windows; this ACL is the gate.
 const pipeSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
@@ -42,12 +46,17 @@ func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net
 	if len(policy.AllowUID) > 0 || len(policy.AllowGID) > 0 {
 		log.Warn("ipc: -allow-uid/-allow-gid are ignored on Windows; pipe access is governed by its security descriptor (SDDL)")
 	}
-	// NOTE: go-winio's ListenPipe does not expose FILE_FLAG_FIRST_PIPE_INSTANCE,
-	// so a second Listen on the same name silently creates another server
-	// instance instead of failing the way a second unix net.Listen would. A
-	// second vpn-helper therefore won't notice the first, and that same gap is
-	// what a pipe-squatter would exploit — both are covered by the dial-side
-	// server-identity SECURITY TODO, to be closed with real Windows testing.
+	// First-instance semantics come from go-winio: ListenPipe creates the first
+	// handle with the NT disposition FILE_CREATE (pipe.go), which is the
+	// equivalent of FILE_FLAG_FIRST_PIPE_INSTANCE — it fails if the name
+	// already exists rather than joining someone else's pipe as an extra
+	// server instance. So a second vpn-helper fails loudly, and a squatter that
+	// got the name first keeps the helper from starting at all instead of
+	// silently sharing it.
+	//
+	// That is only half the defence: a squatter still owns a pipe the GUI might
+	// dial. Clients therefore verify the pipe's owner before sending anything —
+	// see verifyPipeServer in dial_windows.go.
 	ln, err := winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: pipeSDDL})
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen pipe %q: %w", path, err)
