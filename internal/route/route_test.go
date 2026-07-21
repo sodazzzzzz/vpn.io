@@ -97,10 +97,54 @@ func TestRemove_ReverseOrder(t *testing.T) {
 	want := []call{
 		{op: "del", prefix: netip.MustParsePrefix("128.0.0.0/1"), gw: netip.MustParseAddr("10.8.0.1"), iface: "utun4"},
 		{op: "del", prefix: netip.MustParsePrefix("0.0.0.0/1"), gw: netip.MustParseAddr("10.8.0.1"), iface: "utun4"},
-		{op: "del", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: "utun4"},
+		// The pin-hole was added with iface "" (kernel picks the physical link
+		// from the gateway), so it must be deleted with iface "" too.
+		{op: "del", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
 	}
 	if !reflect.DeepEqual(r.calls, want) {
 		t.Fatalf("calls mismatch:\n got=%+v\nwant=%+v", r.calls, want)
+	}
+}
+
+// Every route must be removed with the same iface hint it was added with.
+// Rollback used to pass the TUN name for all deletions; on Linux `ip route del`
+// matches on the full selector, so the pin-hole (added without `dev`) never
+// matched and a host route to the VPN server survived every disconnect.
+func TestRemove_UsesIfaceFromInstall(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	added := map[netip.Prefix]string{}
+	for _, c := range r.calls {
+		if c.op == "add" {
+			added[c.prefix] = c.iface
+		}
+	}
+	r.calls = nil
+	m.Remove()
+
+	if len(r.calls) != len(added) {
+		t.Fatalf("removed %d routes, installed %d", len(r.calls), len(added))
+	}
+	for _, c := range r.calls {
+		if c.op != "del" {
+			t.Fatalf("unexpected op %q during Remove", c.op)
+		}
+		want, ok := added[c.prefix]
+		if !ok {
+			t.Errorf("removed %s which was never added", c.prefix)
+			continue
+		}
+		if c.iface != want {
+			t.Errorf("removed %s with iface %q, added with %q", c.prefix, c.iface, want)
+		}
 	}
 }
 
@@ -134,7 +178,8 @@ func TestInstall_RollsBackOnFailure(t *testing.T) {
 	want := []call{
 		{op: "add", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
 		{op: "add", prefix: netip.MustParsePrefix("10.0.0.0/8"), gw: netip.MustParseAddr("10.8.0.1"), iface: "utun4"},
-		{op: "del", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: "utun4"},
+		// Rolled back with the iface it was added with — "" for the pin-hole.
+		{op: "del", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
 	}
 	if !reflect.DeepEqual(r.calls, want) {
 		t.Fatalf("calls mismatch:\n got=%+v\nwant=%+v", r.calls, want)

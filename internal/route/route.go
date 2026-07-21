@@ -37,7 +37,10 @@ type Runner interface {
 	// infer it from gw; it's a hint, not a guarantee.
 	AddRoute(prefix netip.Prefix, gw netip.Addr, iface string) error
 
-	// DelRoute removes a route previously installed with AddRoute.
+	// DelRoute removes a route previously installed with AddRoute. iface must
+	// be the same value AddRoute was given: on Linux `ip route del` matches on
+	// the full selector, so naming a different device (or any device for a
+	// route added without one) fails to match and leaves the route in place.
 	DelRoute(prefix netip.Prefix, gw netip.Addr, iface string) error
 }
 
@@ -56,6 +59,12 @@ type Manager struct {
 type installedKey struct {
 	prefix netip.Prefix
 	gw     netip.Addr
+	// iface is the hint the route was *added* with, and removal must reuse it
+	// verbatim. The pin-hole is added with iface="" so the kernel binds it to
+	// the physical link; deleting it with the TUN's name instead makes the
+	// selector miss and leaves a stale host route to the VPN server behind
+	// after every disconnect.
+	iface string
 }
 
 // New constructs a Manager backed by the platform's default Runner. The
@@ -190,7 +199,7 @@ func (m *Manager) add(p netip.Prefix, gw netip.Addr, iface string) error {
 	if err := m.runner.AddRoute(p, gw, iface); err != nil {
 		return err
 	}
-	m.installed = append(m.installed, installedKey{prefix: p, gw: gw})
+	m.installed = append(m.installed, installedKey{prefix: p, gw: gw, iface: iface})
 	m.log.Debug("route added", "prefix", p, "via", gw)
 	return nil
 }
@@ -198,7 +207,7 @@ func (m *Manager) add(p netip.Prefix, gw netip.Addr, iface string) error {
 func (m *Manager) rollback() {
 	for i := len(m.installed) - 1; i >= 0; i-- {
 		k := m.installed[i]
-		if err := m.runner.DelRoute(k.prefix, k.gw, m.iface); err != nil {
+		if err := m.runner.DelRoute(k.prefix, k.gw, k.iface); err != nil {
 			m.log.Warn("route removal failed", "prefix", k.prefix, "via", k.gw, "err", err)
 			continue
 		}
