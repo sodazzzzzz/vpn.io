@@ -43,15 +43,25 @@ type CA struct {
 	Dir  string
 }
 
-// Create initialises a fresh CA at dir. Fails if ca.crt already exists there.
+// Create initialises a fresh CA at dir. Fails if either ca.crt or ca.key
+// already exists there.
 func Create(dir, commonName string) (*CA, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	certPath := filepath.Join(dir, "ca.crt")
 	keyPath := filepath.Join(dir, "ca.key")
-	if _, err := os.Stat(certPath); err == nil {
-		return nil, fmt.Errorf("CA already exists at %s", certPath)
+	// Refuse if any CA material is already present — check BOTH files, not just
+	// the cert. A crash during an earlier Create (or a manually removed file) can
+	// leave one without the other, and we must never silently overwrite a CA
+	// private key. An ambiguous stat error is fatal too: treating it as "absent"
+	// could clobber a live CA.
+	for _, p := range []string{certPath, keyPath} {
+		if _, err := os.Stat(p); err == nil {
+			return nil, fmt.Errorf("CA already exists at %s (remove ca.crt and ca.key to recreate)", dir)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("ca: stat %s: %w", p, err)
+		}
 	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -80,10 +90,15 @@ func Create(dir, commonName string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeCert(certPath, der); err != nil {
+	// Write the key before the cert. Each write is atomic, but the two files
+	// aren't a single unit: if a crash lands between them, a key without a cert
+	// is a harmless orphan (Load fails on the missing cert, Create can recover),
+	// whereas a cert without its key is a usable-looking credential that can't
+	// actually sign — the state this issue is about.
+	if err := writeKey(keyPath, key); err != nil {
 		return nil, err
 	}
-	if err := writeKey(keyPath, key); err != nil {
+	if err := writeCert(certPath, der); err != nil {
 		return nil, err
 	}
 	return &CA{Cert: cert, Key: key, Dir: dir}, nil
@@ -231,10 +246,13 @@ func (c *CA) issueTo(tpl *x509.Certificate, dir, basename string) error {
 	if err != nil {
 		return fmt.Errorf("sign certificate: %w", err)
 	}
-	if err := writeCert(filepath.Join(dir, basename+".crt"), der); err != nil {
+	// Key before cert (see Create): an orphan key is recoverable, an orphan cert
+	// is a credential that can't sign. Each file is written atomically, so a
+	// crash never leaves a truncated cert or key on disk.
+	if err := writeKey(filepath.Join(dir, basename+".key"), key); err != nil {
 		return err
 	}
-	return writeKey(filepath.Join(dir, basename+".key"), key)
+	return writeCert(filepath.Join(dir, basename+".crt"), der)
 }
 
 func baseTemplate(commonName string, validity time.Duration) (*x509.Certificate, error) {
@@ -257,7 +275,7 @@ func randomSerial() (*big.Int, error) {
 }
 
 func writeCert(path string, der []byte) error {
-	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+	return writeFileAtomic(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
 }
 
 func writeKey(path string, key *ecdsa.PrivateKey) error {
@@ -266,7 +284,51 @@ func writeKey(path string, key *ecdsa.PrivateKey) error {
 		return err
 	}
 	// 0600 is honoured on Unix; Windows ignores it, see README for ACL hardening.
-	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600)
+	return writeFileAtomic(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600)
+}
+
+// writeFileAtomic writes data to path via a temp file in the same directory,
+// fsynced and renamed into place, so a crash or full disk never leaves a
+// half-written cert or key — a reader sees either the old file or the new one,
+// never a truncated one. Mirrors the temp+fsync+rename discipline in the revoke
+// and invite stores. perm is applied to the final file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".ca-*.tmp")
+	if err != nil {
+		return fmt.Errorf("ca: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("ca: chmod temp: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("ca: write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("ca: sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("ca: close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("ca: replace %s: %w", path, err)
+	}
+	// fsync the directory so the rename itself reaches disk — key material
+	// shouldn't vanish on a crash right after the rename.
+	if dirF, err := os.Open(dir); err == nil {
+		_ = dirF.Sync()
+		_ = dirF.Close()
+	}
+	return nil
 }
 
 func readCert(path string) (*x509.Certificate, error) {

@@ -304,3 +304,29 @@ func TestIssueClientRejectsPathTraversal(t *testing.T) {
 		t.Fatal("server private key was overwritten by a traversing client name")
 	}
 }
+
+// Create must not overwrite existing CA material — it checks BOTH ca.crt and
+// ca.key, not just the cert. A crash-partial state (or a stray file) must never
+// silently clobber a CA private key. Regression for the guard that used to look
+// at ca.crt alone.
+func TestCreateRefusesWhenEitherCAFileExists(t *testing.T) {
+	for _, present := range []string{"ca.crt", "ca.key"} {
+		t.Run(present, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, present)
+			if err := os.WriteFile(path, []byte("preexisting"), 0o600); err != nil {
+				t.Fatalf("seed %s: %v", present, err)
+			}
+			if _, err := Create(dir, "test CA"); err == nil {
+				t.Fatalf("Create succeeded with %s already present; must refuse", present)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s after: %v", present, err)
+			}
+			if string(got) != "preexisting" {
+				t.Errorf("%s was overwritten; Create must not touch existing CA material", present)
+			}
+		})
+	}
+}
