@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 // newRunner returns the Windows Runner, backed by the `route.exe` and
@@ -28,9 +29,9 @@ type windowsRunner struct{}
 //	Network Destination        Netmask          Gateway       Interface  Metric
 //	          0.0.0.0          0.0.0.0      192.168.1.1   192.168.1.34     25
 func (windowsRunner) DefaultGateway() (netip.Addr, error) {
-	out, err := exec.Command("route", "print", "0.0.0.0").CombinedOutput()
+	out, err := execx.Output("route", "print", "0.0.0.0")
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("route print: %w (%s)", err, strings.TrimSpace(string(out)))
+		return netip.Addr{}, err
 	}
 	var (
 		best       netip.Addr
@@ -129,9 +130,5 @@ func prefixToNetMask(p netip.Prefix) (string, string, error) {
 }
 
 func runWin(argv []string) error {
-	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w (%s)", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return execx.Run(argv[0], argv[1:]...)
 }

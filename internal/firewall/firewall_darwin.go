@@ -7,8 +7,9 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 // On macOS we block IPv6 by turning it off on every active network service
@@ -144,9 +145,9 @@ func (d *darwinRunner) v6RestoreFlag(mode string) string {
 // listEnabledServices runs `networksetup -listallnetworkservices` and
 // returns active services (lines starting with "*" are disabled).
 func (d *darwinRunner) listEnabledServices() ([]string, error) {
-	out, err := exec.Command("networksetup", "-listallnetworkservices").CombinedOutput()
+	out, err := execx.Output("networksetup", "-listallnetworkservices")
 	if err != nil {
-		return nil, fmt.Errorf("listnetworkservices: %w (%s)", err, strings.TrimSpace(string(out)))
+		return nil, err
 	}
 	var svcs []string
 	sc := bufio.NewScanner(bytes.NewReader(out))
@@ -169,9 +170,9 @@ func (d *darwinRunner) listEnabledServices() ([]string, error) {
 // -getv6settings returns only the IPv6 configuration (mode on the first
 // line), which is more stable than -getinfo's combined dump.
 func (d *darwinRunner) getV6Mode(svc string) (string, error) {
-	out, err := exec.Command("networksetup", "-getv6settings", svc).CombinedOutput()
+	out, err := execx.Output("networksetup", "-getv6settings", svc)
 	if err != nil {
-		return "", fmt.Errorf("getv6settings %q: %w (%s)", svc, err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
@@ -184,9 +185,8 @@ func (d *darwinRunner) getV6Mode(svc string) (string, error) {
 }
 
 func (d *darwinRunner) setV6(svc, flag string) error {
-	out, err := exec.Command("networksetup", flag, svc).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("networksetup %s %q: %w (%s)", flag, svc, err, strings.TrimSpace(string(out)))
+	if err := execx.Run("networksetup", flag, svc); err != nil {
+		return err
 	}
 	return nil
 }
