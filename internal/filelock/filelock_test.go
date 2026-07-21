@@ -64,3 +64,29 @@ func TestUnlockNilSafeAndIdempotent(t *testing.T) {
 		t.Errorf("second Unlock should be a no-op: %v", err)
 	}
 }
+
+// Acquire must not block forever: if the lock stays held past acquireTimeout it
+// returns an error, so a wedged holder can't freeze the caller — the property
+// that keeps the bot's single-threaded update loop responsive.
+func TestAcquireTimesOutWhenHeld(t *testing.T) {
+	saved := acquireTimeout
+	acquireTimeout = 80 * time.Millisecond
+	defer func() { acquireTimeout = saved }()
+
+	path := filepath.Join(t.TempDir(), "data.json")
+	held, err := Acquire(path)
+	if err != nil {
+		t.Fatalf("Acquire (holder): %v", err)
+	}
+	defer func() { _ = held.Unlock() }()
+
+	start := time.Now()
+	l, err := Acquire(path)
+	if err == nil {
+		_ = l.Unlock()
+		t.Fatal("second Acquire succeeded while the lock was held; want a timeout error")
+	}
+	if waited := time.Since(start); waited < acquireTimeout {
+		t.Errorf("Acquire failed after %s, before the %s timeout elapsed", waited, acquireTimeout)
+	}
+}
