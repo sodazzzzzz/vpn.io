@@ -26,10 +26,18 @@ sudo /Applications/vpn.io.app/Contents/Resources/uninstall.sh
 
 ## Linux (Debian / Ubuntu)
 
-1. Установите скачанный пакет (имя файла зависит от версии):
+Есть два `.deb` (различаются по версии библиотеки WebKit — она разная в разных
+поколениях дистрибутивов):
+
+- **`vpn-io_<версия>_amd64.deb`** — Ubuntu 24.04+ / Debian 13+ (WebKit 4.1).
+- **`vpn-io_<версия>_amd64_legacy-webkit4.0.deb`** — Ubuntu 22.04 / Debian 11–12 (WebKit 4.0).
+
+1. Установите тот пакет, что подходит вашей системе (`apt` сам подтянет зависимости;
+   если выбрать не тот, установка упадёт с неудовлетворённой зависимостью
+   `libwebkit2gtk-*`):
 
    ```
-   sudo apt install ./vpn-io_*.deb
+   sudo apt install ./vpn-io_<версия>_amd64.deb
    ```
 
 2. **Выйдите из системы и войдите снова** один раз — чтобы ваш аккаунт попал в
