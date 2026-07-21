@@ -21,10 +21,22 @@ systemctl daemon-reload || true
 # leaves it (a shared sysctl — flipping it might surprise other services).
 ENV_FILE=/etc/vpn-server/server.env
 TEARDOWN=/usr/local/lib/vpn-server/teardown-nat.sh
+# read_env extracts one key from a systemd EnvironmentFile WITHOUT `.`-sourcing
+# it. The file is literal KEY=VALUE (root-owned 0640); sourcing it as shell would
+# EXECUTE a value containing $( ), backticks or spaces that systemd otherwise
+# takes literally (#160). last-wins like systemd; everything after the first '=';
+# one layer of surrounding quotes stripped.
+read_env() {
+    local v
+    v="$(grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+    v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+    printf '%s' "$v"
+}
+
 if [[ -r "$ENV_FILE" && -x "$TEARDOWN" ]]; then
-    # shellcheck disable=SC1090
-    . "$ENV_FILE"
-    if [[ -n "${VPN_SUBNET:-}" && -n "${VPN_WAN:-}" ]]; then
+    VPN_SUBNET="$(read_env VPN_SUBNET)"
+    VPN_WAN="$(read_env VPN_WAN)"
+    if [[ -n "$VPN_SUBNET" && -n "$VPN_WAN" ]]; then
         echo "* reverting NAT rule ($VPN_SUBNET via $VPN_WAN)"
         "$TEARDOWN" "$VPN_SUBNET" "$VPN_WAN" || true
     fi
