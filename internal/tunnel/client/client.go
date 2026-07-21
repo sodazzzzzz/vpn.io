@@ -539,10 +539,15 @@ func (c *Client) ensureDNS(a tunnel.AssignIP) error {
 
 // ensureConfigured calls tun.Configure on the FIRST successful AssignIP.
 // Subsequent reconnects with the same IP are no-ops (Linux `ip addr add`
-// errors on an already-present address). If the server hands out a
-// different IP after reconnect, we log a warning and keep the old config —
-// changing IPs mid-flight would require an adapter teardown that's out of
-// block-6 scope.
+// errors on an already-present address).
+//
+// If the server hands out a DIFFERENT IP after reconnect (our lease expired and
+// the address was reassigned), the tunnel is effectively dead: the TUN still
+// carries the old IP, the server now delivers traffic to the new one, and
+// anti-spoof drops our packets sent from the old source. Re-addressing the
+// adapter mid-flight would need a teardown that's out of scope here, so we fail
+// loudly. The caller turns this into a fatal error, which is honest — far better
+// than reporting Connected on a tunnel that carries nothing.
 func (c *Client) ensureConfigured(a tunnel.AssignIP) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -556,8 +561,8 @@ func (c *Client) ensureConfigured(a tunnel.AssignIP) error {
 		return nil
 	}
 	if c.configuredIP != a.IP {
-		c.log.Warn("server reassigned IP after reconnect; keeping old TUN config",
-			"had", c.configuredIP, "now", a.IP)
+		return fmt.Errorf("server reassigned IP after reconnect (had %s, now %s); restart to reconnect",
+			c.configuredIP, a.IP)
 	}
 	return nil
 }
