@@ -286,3 +286,26 @@ func TestRefreshServerPinhole_SkipsWhenGatewayResolvesToTunnel(t *testing.T) {
 		t.Fatalf("expected no route calls when gateway is the tunnel, got %+v", r.calls)
 	}
 }
+
+// Pushed CIDRs come from the server, so they're untrusted. This package is
+// IPv4-only (the per-OS runners assume it — on Windows an IPv6 prefix used to
+// panic inside a privileged process), so a non-IPv4 push must be dropped, not
+// handed to the runner. IPv4 pushes in the same list still install.
+func TestInstall_SkipsNonIPv4Pushes(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"::/0", "10.0.0.0/8", "2001:db8::/32"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	want := []call{
+		{op: "add", prefix: netip.MustParsePrefix("203.0.113.5/32"), gw: netip.MustParseAddr("192.168.1.1"), iface: ""},
+		{op: "add", prefix: netip.MustParsePrefix("10.0.0.0/8"), gw: netip.MustParseAddr("10.8.0.1"), iface: "utun4"},
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("calls mismatch:\n got=%+v\nwant=%+v", r.calls, want)
+	}
+}
