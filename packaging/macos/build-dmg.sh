@@ -31,13 +31,31 @@ DMG="$DIST/$APP_NAME.dmg"
 
 echo "==> Building GUI ($PLATFORM)"
 rm -rf "$BUILT_APP"
-# wails' own self-sign can fail on the provenance xattr; the .app is still built,
-# so don't abort here — we verify the bundle exists and sign it ourselves below.
-( cd "$GUI_DIR" && "$WAILS" build -platform "$PLATFORM" ) || true
-if [ ! -d "$BUILT_APP" ]; then
-  echo "error: $BUILT_APP was not produced — the build failed" >&2
+# wails' own self-sign can fail on the com.apple.provenance xattr AFTER the .app
+# is fully built; we re-sign by hand below, so THAT failure is benign. But we must
+# not swallow every error with `|| true`: a build that dies mid-way (frontend
+# bundle crash, partial resource copy) also leaves a .app directory, and shipping
+# that broken bundle is #142. So capture the exit code and log, and tolerate only
+# the known self-sign failure on an otherwise-complete bundle.
+BUILD_LOG="$(mktemp)"
+if ! ( cd "$GUI_DIR" && "$WAILS" build -platform "$PLATFORM" ) >"$BUILD_LOG" 2>&1; then
+  if ! grep -qiE 'provenance|codesign|code object is not signed' "$BUILD_LOG"; then
+    echo "error: wails build failed:" >&2
+    cat "$BUILD_LOG" >&2
+    rm -f "$BUILD_LOG"
+    exit 1
+  fi
+  echo "note: tolerating wails self-sign failure (the bundle is re-signed below)" >&2
+fi
+# A complete bundle needs the .app AND an executable in Contents/MacOS: a build
+# that aborted after creating the skeleton leaves the directory but no binary.
+if [ ! -d "$BUILT_APP" ] || [ -z "$(ls -A "$BUILT_APP/Contents/MacOS" 2>/dev/null)" ]; then
+  echo "error: $BUILT_APP missing or incomplete (no executable in Contents/MacOS) — the build failed" >&2
+  cat "$BUILD_LOG" >&2
+  rm -f "$BUILD_LOG"
   exit 1
 fi
+rm -f "$BUILD_LOG"
 
 echo "==> Ad-hoc signing"
 mkdir -p "$DIST"
