@@ -82,7 +82,7 @@ codesign --force --sign - "$HELPER"
 echo "==> Staging payload"
 PKGROOT="$(mktemp -d)"
 trap 'rm -rf "$PKGROOT"' EXIT
-mkdir -p "$PKGROOT/Applications" "$PKGROOT/usr/local/bin" "$PKGROOT/Library/LaunchDaemons"
+mkdir -p "$PKGROOT/Applications" "$PKGROOT/usr/local/bin" "$PKGROOT/Library/LaunchDaemons" "$PKGROOT/etc/newsyslog.d"
 
 # Ad-hoc sign the .app (wails' self-sign trips on the com.apple.provenance xattr;
 # strip xattrs and sign by hand — same workaround as build-dmg.sh).
@@ -94,6 +94,9 @@ codesign --verify --deep --strict "$APP"
 
 install -m 0755 "$HELPER" "$PKGROOT/usr/local/bin/vpn-helper"
 install -m 0644 "$MACOS/io.vpnio.helper.plist" "$PKGROOT/Library/LaunchDaemons/io.vpnio.helper.plist"
+# newsyslog rotates the helper's log so an info-level, per-connection daemon
+# can't grow /var/log/vpn-io-helper.log without bound (#149).
+install -m 0644 "$MACOS/vpn-io-helper.newsyslog.conf" "$PKGROOT/etc/newsyslog.d/vpn-io-helper.conf"
 
 echo "==> Building .pkg ($VERSION)"
 chmod +x "$MACOS/scripts/preinstall" "$MACOS/scripts/postinstall"
