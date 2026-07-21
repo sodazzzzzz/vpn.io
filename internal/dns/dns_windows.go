@@ -4,9 +4,9 @@ package dns
 
 import (
 	"fmt"
-	"os/exec"
 	"strconv"
-	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 func newRunner() Runner { return &windowsRunner{} }
@@ -64,9 +64,5 @@ func (w *windowsRunner) Restore() error {
 }
 
 func runNetsh(args []string) error {
-	out, err := exec.Command("netsh", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("netsh %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return execx.Run("netsh", args...)
 }

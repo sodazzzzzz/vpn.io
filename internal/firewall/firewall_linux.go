@@ -5,8 +5,9 @@ package firewall
 import (
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 // tableName is our dedicated nftables table. Keeping everything in a table
@@ -108,20 +109,14 @@ func (nftRunner) Clear() error {
 
 // runNftArgs runs `nft <args...>`.
 func runNftArgs(args ...string) error {
-	out, err := exec.Command("nft", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("nft %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return execx.Run("nft", args...)
 }
 
 // runNftFile loads ruleset atomically via `nft -f -`. label is purely
 // error context — no single argv represents the whole ruleset.
 func runNftFile(ruleset, label string) error {
-	cmd := exec.Command("nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(ruleset)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("nft -f - (%s): %w (%s)", label, err, strings.TrimSpace(string(out)))
+	if err := execx.RunStdin([]byte(ruleset), "nft", "-f", "-"); err != nil {
+		return fmt.Errorf("nft -f - (%s): %w", label, err)
 	}
 	return nil
 }

@@ -7,8 +7,9 @@ import (
 	"bytes"
 	"fmt"
 	"net/netip"
-	"os/exec"
 	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 // newRunner returns the Linux Runner, backed by iproute2 (`ip`) shellouts.
@@ -18,9 +19,9 @@ type linuxRunner struct{}
 
 // DefaultGateway parses `ip -4 route show default` for the via clause.
 func (linuxRunner) DefaultGateway() (netip.Addr, error) {
-	out, err := exec.Command("ip", "-4", "route", "show", "default").CombinedOutput()
+	out, err := execx.Output("ip", "-4", "route", "show", "default")
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("ip route show default: %w (%s)", err, strings.TrimSpace(string(out)))
+		return netip.Addr{}, err
 	}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
@@ -56,9 +57,5 @@ func (linuxRunner) DelRoute(p netip.Prefix, gw netip.Addr, iface string) error {
 }
 
 func runLinux(argv []string) error {
-	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w (%s)", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return execx.Run(argv[0], argv[1:]...)
 }

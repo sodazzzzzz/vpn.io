@@ -3,10 +3,9 @@
 package firewall
 
 import (
-	"fmt"
 	"log/slog"
-	"os/exec"
-	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 // ruleName is the Windows Firewall rule we add and later delete by name.
@@ -57,9 +56,5 @@ func (netshRunner) Clear() error {
 }
 
 func runNetsh(args ...string) error {
-	out, err := exec.Command("netsh", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("netsh %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return execx.Run("netsh", args...)
 }

@@ -4,8 +4,9 @@ package tun
 
 import (
 	"fmt"
-	"os/exec"
 	"strconv"
+
+	"github.com/govpn/internal/execx"
 )
 
 // defaultTUNName is used when the caller leaves the interface name empty.
@@ -38,9 +39,5 @@ func configureDevice(name, ip, netmask, _gateway string, mtu int) error {
 }
 
 func run(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s %v: %w: %s", name, args, err, string(out))
-	}
-	return nil
+	return execx.Run(name, args...)
 }

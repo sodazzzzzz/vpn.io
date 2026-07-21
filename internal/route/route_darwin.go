@@ -7,8 +7,9 @@ import (
 	"bytes"
 	"fmt"
 	"net/netip"
-	"os/exec"
 	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 // newRunner returns the macOS Runner, backed by `/sbin/route` shellouts.
@@ -27,9 +28,9 @@ type darwinRunner struct{}
 // route as its own row, so we read the one whose destination is exactly
 // "default" — the host's real gateway, unaffected by our split routes.
 func (darwinRunner) DefaultGateway() (netip.Addr, error) {
-	out, err := exec.Command("/usr/sbin/netstat", "-rnf", "inet").CombinedOutput()
+	out, err := execx.Output("/usr/sbin/netstat", "-rnf", "inet")
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("netstat -rnf inet: %w (%s)", err, strings.TrimSpace(string(out)))
+		return netip.Addr{}, err
 	}
 	return parseDefaultGateway(out)
 }
@@ -80,9 +81,5 @@ func routeArgs(op string, p netip.Prefix, gw netip.Addr, _ string) []string {
 }
 
 func run(argv []string) error {
-	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w (%s)", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return execx.Run(argv[0], argv[1:]...)
 }

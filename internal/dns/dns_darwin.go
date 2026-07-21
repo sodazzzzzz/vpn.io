@@ -6,8 +6,9 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/govpn/internal/execx"
 )
 
 func newRunner() Runner { return &darwinRunner{} }
@@ -68,9 +69,9 @@ func (d *darwinRunner) Restore() error {
 // listEnabledServices runs `networksetup -listallnetworkservices` and
 // returns active services (lines starting with "*" are disabled).
 func (d *darwinRunner) listEnabledServices() ([]string, error) {
-	out, err := exec.Command("networksetup", "-listallnetworkservices").CombinedOutput()
+	out, err := execx.Output("networksetup", "-listallnetworkservices")
 	if err != nil {
-		return nil, fmt.Errorf("listnetworkservices: %w (%s)", err, strings.TrimSpace(string(out)))
+		return nil, err
 	}
 	var svcs []string
 	sc := bufio.NewScanner(bytes.NewReader(out))
@@ -93,9 +94,9 @@ func (d *darwinRunner) listEnabledServices() ([]string, error) {
 // getDNS reads the current DNS list for svc. Returns nil (length 0) when
 // networksetup reports no DNS servers are configured.
 func (d *darwinRunner) getDNS(svc string) ([]string, error) {
-	out, err := exec.Command("networksetup", "-getdnsservers", svc).CombinedOutput()
+	out, err := execx.Output("networksetup", "-getdnsservers", svc)
 	if err != nil {
-		return nil, fmt.Errorf("getdnsservers %q: %w (%s)", svc, err, strings.TrimSpace(string(out)))
+		return nil, err
 	}
 	text := strings.TrimSpace(string(out))
 	if strings.HasPrefix(text, "There aren't any") {
@@ -106,9 +107,8 @@ func (d *darwinRunner) getDNS(svc string) ([]string, error) {
 
 func (d *darwinRunner) setDNS(svc string, servers []string) error {
 	args := append([]string{"-setdnsservers", svc}, servers...)
-	out, err := exec.Command("networksetup", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("networksetup %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	if err := execx.Run("networksetup", args...); err != nil {
+		return err
 	}
 	return nil
 }
