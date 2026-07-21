@@ -30,5 +30,17 @@ RestartSec=2
 KillSignal=SIGTERM
 TimeoutStopSec=15
 
+# Defence-in-depth: these don't interfere with creating the TUN device,
+# netlink/route changes, the nftables firewall or the unix socket — but they
+# shrink the blast radius of a root daemon that terminates TLS traffic. Kept in
+# sync with packaging/deb/vpn-helper.service (same binary, same privileges).
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+
 [Install]
 WantedBy=multi-user.target
