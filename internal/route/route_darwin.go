@@ -16,26 +16,46 @@ func newRunner() Runner { return darwinRunner{} }
 
 type darwinRunner struct{}
 
-// DefaultGateway parses `route -n get default` for the gateway line.
+// DefaultGateway returns the next-hop of the LITERAL default route (0.0.0.0/0).
+//
+// It deliberately does NOT use `route -n get default`: that does a
+// longest-prefix-match lookup of 0.0.0.0, and while the tunnel's split-default
+// (0.0.0.0/1 + 128.0.0.0/1) is installed, the lookup matches those more-specific
+// routes and returns the TUNNEL gateway. The caller's "is this the tun gateway?"
+// guard then fires every time and the server pin-hole is never re-pinned, so a
+// reconnect after a network change black-holes (#129). `netstat` lists each
+// route as its own row, so we read the one whose destination is exactly
+// "default" — the host's real gateway, unaffected by our split routes.
 func (darwinRunner) DefaultGateway() (netip.Addr, error) {
-	out, err := exec.Command("/sbin/route", "-n", "get", "default").CombinedOutput()
+	out, err := exec.Command("/usr/sbin/netstat", "-rnf", "inet").CombinedOutput()
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("route -n get default: %w (%s)", err, strings.TrimSpace(string(out)))
+		return netip.Addr{}, fmt.Errorf("netstat -rnf inet: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	return parseDefaultGateway(out)
+}
+
+// parseDefaultGateway extracts the gateway of the literal default route from
+// `netstat -rnf inet` output. Split out from the shellout so it can be tested.
+func parseDefaultGateway(out []byte) (netip.Addr, error) {
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if !strings.HasPrefix(line, "gateway:") {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 2 || fields[0] != "default" {
 			continue
 		}
-		val := strings.TrimSpace(strings.TrimPrefix(line, "gateway:"))
-		addr, err := netip.ParseAddr(val)
+		// A default route can point at an interface (e.g. "link#5") on
+		// point-to-point links rather than an IP next-hop; skip those and keep
+		// looking — they aren't a gateway we can pin a host route through.
+		addr, err := netip.ParseAddr(fields[1])
 		if err != nil {
-			return netip.Addr{}, fmt.Errorf("parse gateway %q: %w", val, err)
+			continue
 		}
 		return addr, nil
 	}
-	return netip.Addr{}, fmt.Errorf("no gateway line in `route -n get default` output")
+	if err := sc.Err(); err != nil {
+		return netip.Addr{}, fmt.Errorf("scan netstat output: %w", err)
+	}
+	return netip.Addr{}, fmt.Errorf("no default route with an IP gateway in netstat output")
 }
 
 func (darwinRunner) AddRoute(p netip.Prefix, gw netip.Addr, iface string) error {
