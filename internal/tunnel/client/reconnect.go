@@ -108,16 +108,30 @@ func backoff(minD, maxD time.Duration, attempt int) time.Duration {
 	}
 
 	base := minD << attempt
-	// Detect overflow / above cap; clamp to max.
-	if base <= 0 || base > maxD {
-		base = maxD
+	// Cap the base at maxD-minD, not maxD, so the jitter added below still fits
+	// under maxD instead of being clamped away. Clamping base to maxD made every
+	// client's wait collapse to exactly maxD during a long outage — a synchronous
+	// thundering herd right when the server comes back, which is the very thing
+	// the jitter exists to prevent. Also catches the <<-overflow (base <= 0).
+	ceiling := maxD - minD
+	if ceiling < 0 {
+		ceiling = 0
+	}
+	if base <= 0 || base > ceiling {
+		base = ceiling
 	}
 
 	jitter := time.Duration(0)
 	if minD > 0 {
 		jitter = time.Duration(rand.Int63n(int64(minD)))
 	}
+	// In the normal case (maxD >= 2*minD) base+jitter is already in [minD, maxD);
+	// the clamps only bite for a degenerate maxD < 2*minD config, keeping the
+	// documented [minD, maxD] contract.
 	d := base + jitter
+	if d < minD {
+		d = minD
+	}
 	if d > maxD {
 		d = maxD
 	}

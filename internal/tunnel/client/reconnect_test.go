@@ -36,13 +36,26 @@ func TestBackoff_GrowsThenSaturates(t *testing.T) {
 		t.Errorf("attempt 0: %v not in [%v, %v)", d0, min, 2*min)
 	}
 
-	// By attempt 30+, base saturates at max; result must equal max (no
-	// extra jitter would push it above the cap).
+	// By attempt 30+, the base saturates at the ceiling (max-min), and the
+	// result is base+jitter ∈ [max-min, max). Jitter is PRESERVED at the ceiling
+	// — the fix for the thundering herd — rather than every client collapsing to
+	// exactly max.
 	for attempt := 30; attempt < 40; attempt++ {
 		d := backoff(min, max, attempt)
-		if d != max {
-			t.Errorf("attempt %d: %v, want exactly %v after saturation", attempt, d, max)
+		if d < max-min || d >= max {
+			t.Errorf("attempt %d: %v not in [%v, %v) after saturation", attempt, d, max-min, max)
 		}
+	}
+
+	// And it must actually vary across attempts (not a constant max), or the
+	// herd isn't broken. 20 draws from a 10ms-wide window are astronomically
+	// unlikely to be identical if jitter is live.
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 20; i++ {
+		seen[backoff(min, max, 35)] = true
+	}
+	if len(seen) == 1 {
+		t.Error("backoff at the ceiling produced a single constant value; jitter is not applied")
 	}
 }
 
