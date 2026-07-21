@@ -553,11 +553,17 @@ func (c *Client) ensureConfigured(a tunnel.AssignIP) error {
 	defer c.mu.Unlock()
 
 	if c.configuredIP == "" {
-		if err := tun.Configure(c.dev, a.IP, a.Netmask, a.Gateway); err != nil {
+		// Apply the server-pushed MTU (only when it narrows the interface): if
+		// the server routes over a smaller MTU, locally-generated packets sized
+		// to our default would be dropped or fragmented server-side — a PMTU
+		// black hole invisible to ping. Widening is refused: the read buffers are
+		// sized for the device's open MTU (#146).
+		mtu := effectiveMTU(c.dev.MTU(), a.MTU)
+		if err := tun.Configure(c.dev, a.IP, a.Netmask, a.Gateway, mtu); err != nil {
 			return fmt.Errorf("configure TUN: %w", err)
 		}
 		c.configuredIP = a.IP
-		c.log.Info("TUN configured", "iface", c.dev.Name(), "ip", a.IP, "gw", a.Gateway, "mask", a.Netmask)
+		c.log.Info("TUN configured", "iface", c.dev.Name(), "ip", a.IP, "gw", a.Gateway, "mask", a.Netmask, "mtu", mtu)
 		return nil
 	}
 	if c.configuredIP != a.IP {
@@ -565,6 +571,17 @@ func (c *Client) ensureConfigured(a tunnel.AssignIP) error {
 			c.configuredIP, a.IP)
 	}
 	return nil
+}
+
+// effectiveMTU returns the MTU to program on the interface: the server-pushed
+// value when it is a valid narrowing of the device's own MTU, else the device's
+// MTU. Only narrowing is honoured — a larger pushed MTU could exceed the read
+// buffers the device was opened with, and isn't the PMTU-blackhole case anyway.
+func effectiveMTU(deviceMTU, pushed int) int {
+	if pushed > 0 && pushed < deviceMTU {
+		return pushed
+	}
+	return deviceMTU
 }
 
 // runSession runs the three (or two) goroutines that drive a live

@@ -52,21 +52,28 @@ type SelfConfigurer interface {
 	ConfigureAddr(ip, netmask, gateway string) error
 }
 
-// Configure assigns an IPv4 address and netmask to dev and brings it up.
+// Configure assigns an IPv4 address and netmask to dev, brings it up, and sets
+// its interface MTU to mtu.
 //
 // gateway is the peer/remote address of the point-to-point link. It is
 // required on macOS (utun is strictly point-to-point) and ignored on
 // Linux and Windows.
 //
-// If dev implements [SelfConfigurer], that path is used; otherwise Configure
-// shells out to the platform's network tools.
+// mtu is the MTU to program on the OS interface. The server passes dev.MTU()
+// (its own default); the client passes a smaller MTU the server pushed, so
+// locally-generated packets don't overrun the tunnel and get black-holed (#146).
+// Callers must not pass an MTU larger than the device was opened with — the read
+// buffers are sized for that.
+//
+// If dev implements [SelfConfigurer], that path is used (mtu is left to the
+// device); otherwise Configure shells out to the platform's network tools.
 //
 // Configure does not install any routes — routing is the caller's
 // responsibility (see internal/tunnel for the server- and client-side
 // route setup).
-func Configure(dev Device, ip, netmask, gateway string) error {
+func Configure(dev Device, ip, netmask, gateway string, mtu int) error {
 	if sc, ok := dev.(SelfConfigurer); ok {
 		return sc.ConfigureAddr(ip, netmask, gateway)
 	}
-	return configureDevice(dev.Name(), ip, netmask, gateway, dev.MTU())
+	return configureDevice(dev.Name(), ip, netmask, gateway, mtu)
 }

@@ -73,7 +73,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "vpn-server: open tun:", err)
 		os.Exit(1)
 	}
-	if err := tun.Configure(dev, cfg.Gateway, cfg.Netmask, cfg.Gateway); err != nil {
+	if err := tun.Configure(dev, cfg.Gateway, cfg.Netmask, cfg.Gateway, dev.MTU()); err != nil {
 		_ = dev.Close()
 		fmt.Fprintln(os.Stderr, "vpn-server: configure tun:", err)
 		os.Exit(1)
