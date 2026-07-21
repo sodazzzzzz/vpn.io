@@ -269,6 +269,21 @@ type Checker struct {
 // IsRevoked always reports false.
 func NewChecker(path string) *Checker { return &Checker{path: path} }
 
+// mtimeGranularityWindow is how long after a change the Checker keeps re-reading
+// the deny-list on every check instead of trusting its mtime+size cache — long
+// enough to cover a filesystem whose mtime resolution (1–2 s) could otherwise
+// hide a same-tick, same-byte-count rewrite from the cheap change check.
+const mtimeGranularityWindow = 2 * time.Second
+
+// checkerNow is time.Now, indirected so tests can pin the clock.
+var checkerNow = time.Now
+
+// recentlyModified reports whether mtime is within mtimeGranularityWindow of now
+// — the window in which a same-tick rewrite could have slipped past mtime+size.
+func recentlyModified(mtime time.Time) bool {
+	return checkerNow().Sub(mtime) < mtimeGranularityWindow
+}
+
 // IsRevoked reports whether serial is on the deny-list, reloading the file first
 // if it changed on disk. A parse/read error is returned to the caller, which
 // should fail closed (reject the connection) rather than admit a possibly
@@ -292,9 +307,15 @@ func (c *Checker) IsRevoked(serial *big.Int) (bool, error) {
 		c.mtime, c.size = time.Time{}, 0
 	case err != nil:
 		return false, fmt.Errorf("revoke: stat %q: %w", c.path, err)
-	case c.set == nil || !fi.ModTime().Equal(c.mtime) || fi.Size() != c.size:
-		// Reload on any mtime or size change (size guards against rapid
-		// rewrites that land in the same mtime tick).
+	case c.set == nil || !fi.ModTime().Equal(c.mtime) || fi.Size() != c.size || recentlyModified(fi.ModTime()):
+		// Reload on any mtime or size change. The size check guards against a
+		// rewrite that lands in the same mtime tick with a DIFFERENT byte count;
+		// recentlyModified covers the residual case it misses — a same-tick
+		// rewrite to the SAME byte count on a filesystem with coarse (1–2 s) mtime
+		// resolution. While the mtime is that fresh we can't rule such a rewrite
+		// out, so we re-read on every check: a few extra reads for a couple of
+		// seconds after any change, then back to cached checks once the mtime
+		// settles (#158).
 		f, err := load(c.path)
 		if errors.Is(err, os.ErrNotExist) {
 			// TOCTOU: the file vanished between the Stat above and this read.
