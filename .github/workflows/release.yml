@@ -74,6 +74,18 @@ jobs:
           Copy-Item wintun-tmp/wintun/bin/amd64/wintun.dll -Destination wintun.dll
           Remove-Item wintun.zip
           Remove-Item -Recurse wintun-tmp
+      - name: stamp version into wails.json
+        # The NSIS installer's version (Add/Remove Programs, future in-app
+        # update) comes from wails.json info.productVersion, which is otherwise
+        # static — so a v0.2.0 tag would ship an installer calling itself
+        # something else (#151). Inject the tag version before building.
+        working-directory: cmd/vpn-gui
+        run: |
+          $v = "${env:GITHUB_REF_NAME}" -replace '^v',''
+          $json = Get-Content wails.json -Raw | ConvertFrom-Json
+          $json.info | Add-Member -NotePropertyName productVersion -NotePropertyValue $v -Force
+          $json | ConvertTo-Json -Depth 20 | Set-Content wails.json
+          Get-Content wails.json
       - name: build GUI + installer
         working-directory: cmd/vpn-gui
         run: wails build -nsis
@@ -111,9 +123,50 @@ jobs:
           path: dist/vpn.io.pkg
           if-no-files-found: error
 
+  linux-desktop:
+    name: build desktop .deb (linux/amd64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: install GTK/WebKit deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev
+      - name: install wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: build GUI
+        working-directory: cmd/vpn-gui
+        run: wails build -tags webkit2_40
+      - name: build helper daemon
+        run: go build -trimpath -ldflags="-s -w" -o dist/vpn-helper ./cmd/vpn-helper
+      - name: install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
+      - name: package .deb
+        # Stamp the version from the tag (nfpm reads ${VERSION}); it was hardcoded
+        # 0.1.0 in the CI-only desktop-linux.yml and never reached releases (#151).
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          export VERSION="${VERSION#v}"   # nfpm rejects a leading 'v'
+          nfpm package --config packaging/deb/nfpm.yaml --packager deb --target dist/
+          ls -lh dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-desktop-deb
+          path: dist/vpn-io_*.deb
+          if-no-files-found: error
+
   publish:
     name: publish release
-    needs: [server-bot, windows, macos]
+    needs: [server-bot, windows, macos, linux-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -129,6 +182,7 @@ jobs:
           cp artifacts/server-bot/vpn-ca          rel/
           cp artifacts/windows-installer/vpn-io-setup.exe rel/
           cp artifacts/macos-pkg/vpn.io.pkg       rel/
+          cp artifacts/linux-desktop-deb/vpn-io_*.deb rel/
           chmod +x rel/vpn-server rel/vpn-bot rel/vpn-ca
           ( cd rel && sha256sum * > SHA256SUMS )
           ls -lh rel
