@@ -28,6 +28,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/govpn/internal/dns"
 	"github.com/govpn/internal/helper"
 	"github.com/govpn/internal/ipc"
 )
@@ -105,6 +106,15 @@ func main() {
 // until ctx is cancelled, then tears the tunnel down. Shared by the console and
 // Windows-service entry points.
 func runDaemon(ctx context.Context, socket string, mode os.FileMode, policy ipc.Policy, log *slog.Logger, ready func()) error {
+	// Heal a prior crash before serving: if an earlier run applied DNS and died
+	// without cleanup (SIGKILL / panic / reboot), the host can still point at a
+	// now-dead tunnel resolver. Reconcile undoes only a change it can prove is
+	// ours (a durable backup), so it's safe to run unconditionally here — no
+	// terminal needed, unlike vpn-client --clear-dns (#130).
+	if err := dns.Reconcile(log); err != nil {
+		log.Warn("vpn-helper: DNS reconcile at startup failed", "err", err)
+	}
+
 	ln, err := ipc.Listen(socket, mode, policy, log)
 	if err != nil {
 		return err

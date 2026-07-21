@@ -123,3 +123,65 @@ func TestResolvConf_Absent_RemovedOnRestore(t *testing.T) {
 		t.Fatalf("resolv.conf should be removed on restore, stat err=%v", err)
 	}
 }
+
+// The crash case: a run applies file-mode DNS, then dies without a clean
+// Restore (so the in-memory snapshot is gone). A fresh runner's Reconcile must
+// still put the original /etc/resolv.conf back, from the durable backup, and
+// then drop the backup so it doesn't fire again (#130).
+func TestResolvConf_Reconcile_RecoversFromCrash(t *testing.T) {
+	p := withTempResolvConf(t)
+	const original = "nameserver 192.168.1.1\n"
+	if err := os.WriteFile(p, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Apply and then DISCARD the runner — simulating a crash: the in-memory
+	// snapshot is lost, but the on-disk backup survives.
+	if err := (&linuxRunner{}).applyResolvConf([]string{"1.1.1.1"}); err != nil {
+		t.Fatalf("applyResolvConf: %v", err)
+	}
+	if got, _ := os.ReadFile(p); !strings.Contains(string(got), "nameserver 1.1.1.1") {
+		t.Fatalf("resolv.conf not rewritten: %q", got)
+	}
+	if _, err := os.Stat(backupResolvConfPath()); err != nil {
+		t.Fatalf("durable backup should exist after Apply: %v", err)
+	}
+
+	// A brand-new runner (nothing in memory) recovers from the backup.
+	if err := (&linuxRunner{}).Reconcile(discard()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != original {
+		t.Fatalf("Reconcile did not restore the original: got %q want %q", got, original)
+	}
+	if _, err := os.Stat(backupResolvConfPath()); !os.IsNotExist(err) {
+		t.Fatalf("backup should be removed after a successful Reconcile, stat err=%v", err)
+	}
+
+	// Idempotent: a second Reconcile with no backup left is a clean no-op.
+	if err := (&linuxRunner{}).Reconcile(discard()); err != nil {
+		t.Fatalf("second Reconcile should be a no-op: %v", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != original {
+		t.Fatalf("second Reconcile disturbed resolv.conf: %q", got)
+	}
+}
+
+// A clean Restore must drop the durable backup, so a later helper start doesn't
+// "recover" a resolv.conf that's already correct.
+func TestResolvConf_CleanRestore_DropsBackup(t *testing.T) {
+	p := withTempResolvConf(t)
+	if err := os.WriteFile(p, []byte("nameserver 192.168.1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &linuxRunner{}
+	if err := r.applyResolvConf([]string{"1.1.1.1"}); err != nil {
+		t.Fatalf("applyResolvConf: %v", err)
+	}
+	if err := r.restoreResolvConf(); err != nil {
+		t.Fatalf("restoreResolvConf: %v", err)
+	}
+	if _, err := os.Stat(backupResolvConfPath()); !os.IsNotExist(err) {
+		t.Fatalf("clean Restore should remove the backup, stat err=%v", err)
+	}
+}

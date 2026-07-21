@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/govpn/internal/dns"
 	"github.com/govpn/internal/firewall"
 	"github.com/govpn/internal/tun"
 	"github.com/govpn/internal/tunnel/client"
@@ -36,6 +37,7 @@ func main() {
 		recMax     = flag.Duration("reconnect-max", 60*time.Second, "max reconnect backoff")
 		logLevel   = flag.String("log-level", "info", "debug|info|warn|error")
 		clearFW    = flag.Bool("clear-firewall", false, "remove any leftover leak-protection/kill-switch firewall rules and exit (best-effort; recovers a network locked after a crash)")
+		clearDNS   = flag.Bool("clear-dns", false, "reset DNS to the system default and exit (best-effort; recovers a host left pointing at a dead tunnel resolver after a crash)")
 		allowLeak  = flag.Bool("allow-insecure-leak", false, "at full-tunnel, connect even if leak protection can't be enabled (UNSAFE: IPv6/traffic may bypass the tunnel). Default refuses to connect rather than leak")
 	)
 	flag.Parse()
@@ -49,6 +51,14 @@ func main() {
 			log.Warn("clear-firewall reported an error (this often just means there was nothing to remove)", "err", err)
 		} else {
 			log.Info("vpn-client: leak-protection rules cleared")
+		}
+		return
+	}
+	if *clearDNS {
+		if err := dns.Clear(log); err != nil {
+			log.Warn("clear-dns reported an error (this often just means there was nothing to reset)", "err", err)
+		} else {
+			log.Info("vpn-client: DNS reset to the system default")
 		}
 		return
 	}

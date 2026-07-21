@@ -4,6 +4,7 @@ package dns
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/govpn/internal/execx"
@@ -62,6 +63,15 @@ func (w *windowsRunner) Restore() error {
 	w.iface = ""
 	return err
 }
+
+// Clear is a near no-op on Windows: Apply sets DNS on the TUN adapter, which the
+// OS destroys along with the process on a crash — taking the DNS override with
+// it, so the host falls back to the physical adapter's resolvers on its own.
+// Nothing durable is left to undo.
+func (w *windowsRunner) Clear(_ *slog.Logger) error { return nil }
+
+// Reconcile is a no-op for the same reason.
+func (w *windowsRunner) Reconcile(_ *slog.Logger) error { return nil }
 
 func runNetsh(args []string) error {
 	return execx.Run("netsh", args...)

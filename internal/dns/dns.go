@@ -28,6 +28,14 @@ import (
 type Runner interface {
 	Apply(servers []string, iface string) error
 	Restore() error
+	// Clear best-effort reverts DNS to the system default WITHOUT relying on the
+	// in-process Apply snapshot — the recovery path when a crash left the host
+	// pointing at a now-dead tunnel resolver. Forceful: used by --clear-dns.
+	Clear(log *slog.Logger) error
+	// Reconcile is the crash-safe subset of Clear for helper startup: it only
+	// undoes a mutation it can prove is ours (a durable, on-disk marker), so it
+	// never disturbs a host we never touched. A no-op where no such marker exists.
+	Reconcile(log *slog.Logger) error
 }
 
 // Manager owns one Apply→Restore lifecycle.
@@ -101,4 +109,27 @@ func (m *Manager) Remove() {
 	}
 	m.applied = false
 	m.log.Debug("DNS restored")
+}
+
+// Clear reverts DNS to the system default, best-effort, without a live Manager
+// — the escape hatch (vpn-client --clear-dns) for a resolver left pointing at a
+// dead tunnel by a crashed client. It is forceful: on macOS it resets every
+// service to automatic (DHCP), which also drops a pre-existing manual DNS — a
+// fair trade for a recovery command the user runs because DNS is already broken.
+func Clear(log *slog.Logger) error {
+	if log == nil {
+		log = slog.Default()
+	}
+	return newRunner().Clear(log)
+}
+
+// Reconcile undoes a DNS change left behind by a previously-crashed run, but
+// only when it can prove one happened (a durable backup we wrote). Safe to call
+// unconditionally at helper startup; a no-op when there's nothing of ours to
+// undo, so it never touches a host we didn't configure.
+func Reconcile(log *slog.Logger) error {
+	if log == nil {
+		log = slog.Default()
+	}
+	return newRunner().Reconcile(log)
 }
