@@ -27,8 +27,17 @@ permissions:
 
 jobs:
   build-gui:
-    name: build GUI (linux/amd64)
-    runs-on: ubuntu-22.04
+    # One build per WebKit ABI: Ubuntu 22.04 / Debian 11-12 ship only
+    # libwebkit2gtk-4.0, Ubuntu 24.04+ / Debian 13+ only 4.1. Verifying both here
+    # keeps the two release .deb variants (#140) buildable on every PR.
+    name: build GUI (linux/amd64, ${{ matrix.webkit.tag }})
+    runs-on: ${{ matrix.webkit.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        webkit:
+          - { tag: webkit2_41, runner: ubuntu-24.04, dev: libwebkit2gtk-4.1-dev, dep: libwebkit2gtk-4.1-0,  filesuffix: "" }
+          - { tag: webkit2_40, runner: ubuntu-22.04, dev: libwebkit2gtk-4.0-dev, dep: libwebkit2gtk-4.0-37, filesuffix: "_legacy-webkit4.0" }
     steps:
       - uses: actions/checkout@v4
 
@@ -46,14 +55,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
-            libgtk-3-dev libwebkit2gtk-4.0-dev
+            libgtk-3-dev ${{ matrix.webkit.dev }}
 
       - name: install wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: build GUI
         working-directory: cmd/vpn-gui
-        run: wails build -tags webkit2_40
+        run: wails build -tags ${{ matrix.webkit.tag }}
 
       - name: build helper daemon
         run: go build -trimpath -ldflags="-s -w" -o dist/vpn-helper ./cmd/vpn-helper
@@ -64,9 +73,11 @@ jobs:
       - name: package .deb
         env:
           VERSION: 0.1.0
+          WEBKIT_DEP: ${{ matrix.webkit.dep }}
         run: |
           ls -la cmd/vpn-gui/build/bin dist
-          nfpm package --config packaging/deb/nfpm.yaml --packager deb --target dist/
+          nfpm package --config packaging/deb/nfpm.yaml --packager deb \
+            --target "dist/vpn-io_${VERSION}_amd64${{ matrix.webkit.filesuffix }}.deb"
 
       - name: show package
         run: |
@@ -76,6 +87,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vpn-io-linux-amd64-deb
+          name: vpn-io-linux-amd64-deb-${{ matrix.webkit.tag }}
           path: dist/*.deb
           if-no-files-found: error

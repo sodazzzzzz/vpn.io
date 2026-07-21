@@ -14,10 +14,14 @@ description: |
   A tray GUI plus the privileged helper daemon that owns the tunnel
   (installed as a systemd service).
 
-# Runtime libraries the Wails (GTK + WebKit) GUI links against.
+# Runtime libraries the Wails (GTK + WebKit) GUI links against. The WebKit ABI
+# is parameterised because it splits across distro generations: Ubuntu 22.04 /
+# Debian 11-12 ship only libwebkit2gtk-4.0-37, while Ubuntu 24.04+ / Debian 13+
+# ship only libwebkit2gtk-4.1-0. CI builds one .deb per ABI and sets WEBKIT_DEP
+# to match the -tags webkit2_40/webkit2_41 the GUI was linked with (#140).
 depends:
   - libgtk-3-0
-  - libwebkit2gtk-4.0-37
+  - ${WEBKIT_DEP}
 
 contents:
   - src: cmd/vpn-gui/build/bin/vpn.io
