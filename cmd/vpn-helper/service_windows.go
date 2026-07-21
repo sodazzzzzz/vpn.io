@@ -4,12 +4,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -17,6 +19,16 @@ import (
 
 // eventID is the (single, generic) event identifier for our Event Log messages.
 const eventID = 1
+
+// serviceStopTimeout bounds how long we wait for a stop request to reach the
+// Stopped state; serviceGoneTimeout bounds how long we wait for the SCM to
+// actually forget a deleted service — it lingers in "pending deletion" while any
+// handle stays open (an open services.msc / Task Manager is the classic culprit),
+// during which a fresh CreateService fails with ERROR_SERVICE_MARKED_FOR_DELETE.
+const (
+	serviceStopTimeout = 15 * time.Second
+	serviceGoneTimeout = 20 * time.Second
+)
 
 // isService reports whether the process was started by the Windows Service
 // Control Manager (as opposed to a console).
@@ -142,19 +154,24 @@ func installService(name, display, desc string, args []string) error {
 	}
 	defer m.Disconnect()
 
-	if existing, err := m.OpenService(name); err == nil {
-		existing.Close()
-		return fmt.Errorf("service %q is already installed (use -uninstall first)", name)
+	// Idempotent by design (#112): an in-place upgrade often finds the previous
+	// version's service still registered — a -uninstall that was skipped or
+	// swallowed, or one that left the service "pending deletion" because a handle
+	// was held. Rather than fail the install (the old behaviour, which aborted the
+	// installer), remove any leftover and wait for the SCM to actually forget it,
+	// then create the new one.
+	if err := deleteServiceIfPresent(m, name); err != nil {
+		return err
 	}
 
-	s, err := m.CreateService(name, exe, mgr.Config{
+	s, err := createServiceWithRetry(m, name, exe, mgr.Config{
 		DisplayName: display,
 		Description: desc,
 		StartType:   mgr.StartAutomatic,
 		// ServiceStartName empty => LocalSystem.
-	}, args...)
+	}, args)
 	if err != nil {
-		return fmt.Errorf("create service: %w", err)
+		return err
 	}
 	defer s.Close()
 
@@ -162,6 +179,84 @@ func installService(name, display, desc string, args []string) error {
 	// properly. Best effort: a missing source only degrades logging, so don't
 	// undo a successful service install over it.
 	_ = eventlog.InstallAsEventCreate(name, eventlog.Info|eventlog.Warning|eventlog.Error)
+	return nil
+}
+
+// createServiceWithRetry creates the service, retrying while the SCM still
+// reports it "marked for deletion" (1072) — a handle that outlived the delete
+// above keeps the name reserved for a moment. Bounded by serviceGoneTimeout.
+func createServiceWithRetry(m *mgr.Mgr, name, exe string, cfg mgr.Config, args []string) (*mgr.Service, error) {
+	deadline := time.Now().Add(serviceGoneTimeout)
+	for {
+		s, err := m.CreateService(name, exe, cfg, args...)
+		if err == nil {
+			return s, nil
+		}
+		if errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) && time.Now().Before(deadline) {
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		return nil, fmt.Errorf("create service: %w", err)
+	}
+}
+
+// deleteServiceIfPresent stops and deletes name if it is registered, then waits
+// until the SCM stops reporting it. A no-op if the service isn't installed.
+func deleteServiceIfPresent(m *mgr.Mgr, name string) error {
+	s, err := m.OpenService(name)
+	if err != nil {
+		return nil // not installed — nothing to remove
+	}
+	if err := stopAndWait(s, name); err != nil {
+		s.Close()
+		return err
+	}
+	err = s.Delete()
+	s.Close() // the SCM finalises deletion only once every handle is closed
+	// "Already marked for deletion" is fine: we only need it gone, and waiting
+	// below confirms that. Any other delete error is real.
+	if err != nil && !errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+		return fmt.Errorf("delete existing service: %w", err)
+	}
+	return waitServiceGone(m, name)
+}
+
+// waitServiceGone blocks until OpenService(name) fails — i.e. the SCM has truly
+// dropped the service, not merely marked it for deletion. Returns a pointed
+// error on timeout so the operator knows to close whatever holds a handle.
+func waitServiceGone(m *mgr.Mgr, name string) error {
+	deadline := time.Now().Add(serviceGoneTimeout)
+	for {
+		s, err := m.OpenService(name)
+		if err != nil {
+			return nil // gone
+		}
+		s.Close()
+		if time.Now().After(deadline) {
+			return fmt.Errorf("service %q still pending deletion after %s; close services.msc / Task Manager and retry", name, serviceGoneTimeout)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// stopAndWait requests a stop and blocks until the service reports Stopped (or
+// times out). A service that is already stopped (or can't accept the control)
+// makes Control return an error, which we treat as "nothing to wait on".
+func stopAndWait(s *mgr.Service, name string) error {
+	st, err := s.Control(svc.Stop)
+	if err != nil {
+		return nil
+	}
+	deadline := time.Now().Add(serviceStopTimeout)
+	for st.State != svc.Stopped {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for service %q to stop", name)
+		}
+		time.Sleep(300 * time.Millisecond)
+		if st, err = s.Query(); err != nil {
+			return fmt.Errorf("query service status: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -178,27 +273,22 @@ func removeService(name string) error {
 	if err != nil {
 		return fmt.Errorf("service %q is not installed: %w", name, err)
 	}
-	defer s.Close()
 
 	// Stop it and wait until it has actually stopped before deleting. Calling
-	// Delete() on a still-running service only marks it "pending deletion",
-	// which makes an immediate re-install fail with "marked for deletion".
-	// Control returns an error if it is already stopped — then we just delete.
-	if st, err := s.Control(svc.Stop); err == nil {
-		deadline := time.Now().Add(15 * time.Second)
-		for st.State != svc.Stopped {
-			if time.Now().After(deadline) {
-				return fmt.Errorf("timed out waiting for service %q to stop", name)
-			}
-			time.Sleep(300 * time.Millisecond)
-			if st, err = s.Query(); err != nil {
-				return fmt.Errorf("query service status: %w", err)
-			}
-		}
+	// Delete() on a still-running service only marks it "pending deletion".
+	if err := stopAndWait(s, name); err != nil {
+		s.Close()
+		return err
 	}
-
-	if err := s.Delete(); err != nil {
+	err = s.Delete()
+	s.Close()
+	if err != nil && !errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
 		return fmt.Errorf("delete service: %w", err)
+	}
+	// Wait for the SCM to truly drop it, so the -install that the installer runs
+	// right after (upgrade path) doesn't hit "marked for deletion" (#112).
+	if err := waitServiceGone(m, name); err != nil {
+		return err
 	}
 	// Drop the Event Log source we registered at install (best effort).
 	_ = eventlog.Remove(name)
