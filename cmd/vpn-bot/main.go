@@ -43,6 +43,15 @@ const (
 	// maxTokenLen bounds candidate-token text so a huge message never reaches
 	// the store; a real token is ~22 chars.
 	maxTokenLen = 128
+	// maxPollFailures bounds consecutive update-poll failures before the bot
+	// gives up and exits non-zero. A transient blip or Telegram 5xx clears well
+	// under this; a permanent fault (a revoked or invalid token) fails every
+	// poll, so exiting lets a supervisor restart or alert instead of leaving a
+	// live-looking process that quietly fetches nothing.
+	maxPollFailures = 10
+	// pollBackoff is the pause after a failed update poll — the same 3s the
+	// library's own GetUpdatesChan used, so a flapping network isn't hammered.
+	pollBackoff = 3 * time.Second
 )
 
 func main() {
@@ -187,38 +196,47 @@ func cmdServe(args []string) error {
 	// unbounded number of multi-MB transfers.
 	sendSem := make(chan struct{}, 4)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
+	shutdown := func() error {
+		log.Print("vpn-bot shutting down")
+		wg.Wait() // let in-flight installer uploads finish, not truncate
+		return nil
+	}
+
+	// Long-poll in a dedicated goroutine and fan updates in over a channel, the
+	// way the library's GetUpdatesChan does internally — but here pollUpdates can
+	// see each poll error and turn a persistent one (e.g. a revoked token) into a
+	// fatal on pollErr, instead of the library's silent forever-retry that leaves
+	// a live-looking but useless process.
+	updates := make(chan tgbotapi.Update)
+	pollErr := make(chan error, 1)
+	go pollUpdates(ctx, bot, updates, pollErr)
+
 	for {
 		select {
 		case <-ctx.Done():
-			bot.StopReceivingUpdates()
-			log.Print("vpn-bot shutting down")
+			return shutdown()
+		case err := <-pollErr:
+			// The poller gave up after too many consecutive failures. Drain any
+			// in-flight uploads, then exit non-zero so the supervisor notices.
 			wg.Wait()
-			return nil
-		case update, ok := <-updates:
-			if !ok {
-				wg.Wait()
-				return nil
-			}
+			return err
+		case update := <-updates:
 			if update.CallbackQuery != nil {
 				// Uploading an installer (tens of MB) can take many seconds; run
 				// it off the main loop so other users' updates and a SIGTERM
-				// shutdown aren't blocked behind it. wg + sendSem bound and track
-				// these uploads.
+				// shutdown aren't blocked behind it. Acquire the upload slot here,
+				// *before* spawning the worker, so a burst of button taps can't
+				// pile up an unbounded number of goroutines all parked on the
+				// semaphore; if we're shutting down, stop instead of blocking.
 				cq := update.CallbackQuery
+				select {
+				case sendSem <- struct{}{}:
+				case <-ctx.Done():
+					return shutdown()
+				}
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					// Acquire a slot off the main loop, but bail if we start
-					// shutting down before we get one — a still-queued upload
-					// shouldn't hold up wg.Wait().
-					select {
-					case sendSem <- struct{}{}:
-					case <-ctx.Done():
-						return
-					}
 					defer func() { <-sendSem }()
 					handleCallback(bot, cq, *installersDir)
 				}()
@@ -228,6 +246,57 @@ func cmdServe(args []string) error {
 				continue
 			}
 			handleMessage(bot, store, revoked, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
+		}
+	}
+}
+
+// pollUpdates long-polls Telegram and forwards updates on out, mirroring what
+// tgbotapi.GetUpdatesChan does internally — but it counts consecutive poll
+// failures and, once they cross maxPollFailures, reports the last error on fatal
+// and stops. That turns a permanent fault the library would retry forever in
+// silence (a revoked or invalid token fails every poll) into a visible non-zero
+// exit. It returns when ctx is cancelled or after signalling a fatal error; an
+// in-flight long-poll is simply abandoned as the process exits.
+func pollUpdates(ctx context.Context, bot *tgbotapi.BotAPI, out chan<- tgbotapi.Update, fatal chan<- error) {
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+	failures := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		batch, err := bot.GetUpdates(u)
+		if err != nil {
+			failures++
+			log.Printf("get updates (failure %d/%d): %v", failures, maxPollFailures, err)
+			if failures >= maxPollFailures {
+				select {
+				case fatal <- fmt.Errorf("giving up after %d consecutive update failures: %w", failures, err):
+				case <-ctx.Done():
+				}
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pollBackoff):
+			}
+			continue
+		}
+		failures = 0
+		for _, update := range batch {
+			// Mirror GetUpdatesChan's offset handling: skip anything at or below
+			// the current offset, and advance past each so Telegram drops it from
+			// the next batch.
+			if update.UpdateID < u.Offset {
+				continue
+			}
+			u.Offset = update.UpdateID + 1
+			select {
+			case out <- update:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
@@ -294,18 +363,20 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 			reply(bot, msg.Chat.ID, "That invite is invalid or already used. Ask the owner for a new one.")
 		} else {
 			// A real store failure (disk, permissions) — the user's token may
-			// be fine, so don't call it invalid. Log it and apologise.
+			// be fine, so don't call it invalid. Log it, tell the owner, apologise.
 			log.Printf("redeem token from %s: %v", who, err)
-			reply(bot, msg.Chat.ID, "Sorry — something went wrong on our side. The owner has been notified.")
+			notifyOwner(bot, ownerID, "couldn't redeem an invite token from %s: %v", who, err)
+			reply(bot, msg.Chat.ID, ownerNotifiedText(ownerID, "Sorry — something went wrong on our side."))
 		}
 		return
 	}
 
 	bundle, err := issueBundle(authority, name, server, serverName)
 	if err != nil {
-		// Don't leak internals to the user; log for the operator.
+		// Don't leak internals to the user; log and tell the operator.
 		log.Printf("issue bundle for %q (%s): %v", name, who, err)
-		reply(bot, msg.Chat.ID, "Sorry — couldn't create your profile. The owner has been notified.")
+		notifyOwner(bot, ownerID, "failed to issue a profile for %q (%s): %v", name, who, err)
+		reply(bot, msg.Chat.ID, ownerNotifiedText(ownerID, "Sorry — couldn't create your profile."))
 		return
 	}
 
@@ -315,6 +386,7 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 		// The token is already spent and the cert issued, so don't leave the
 		// user with silence — tell them; the owner can re-issue if needed.
 		log.Printf("send profile to %s: %v", who, err)
+		notifyOwner(bot, ownerID, "issued %q to %s but couldn't deliver the file: %v", name, who, err)
 		reply(bot, msg.Chat.ID, "Your profile was created but I couldn't send the file — please contact the owner.")
 		return
 	}
@@ -459,6 +531,30 @@ func reply(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	if _, err := bot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
 		log.Printf("send reply: %v", err)
 	}
+}
+
+// notifyOwner forwards an operator-facing failure to the owner's chat when an
+// owner is configured, so a user-facing "the owner has been notified" is a
+// promise the bot actually keeps rather than only a log line. With no -owner set
+// there is nobody to tell — ownerNotifiedText adjusts the wording for that case.
+func notifyOwner(bot *tgbotapi.BotAPI, ownerID int64, format string, args ...any) {
+	if ownerID == 0 {
+		return
+	}
+	if _, err := bot.Send(tgbotapi.NewMessage(ownerID, "⚠️ vpn-bot: "+fmt.Sprintf(format, args...))); err != nil {
+		log.Printf("notify owner: %v", err)
+	}
+}
+
+// ownerNotifiedText finishes a user-facing apology, claiming the owner was
+// notified only when an owner is actually configured to receive it; otherwise it
+// points the user at the owner without asserting a notification that never went
+// out.
+func ownerNotifiedText(ownerID int64, prefix string) string {
+	if ownerID != 0 {
+		return prefix + " The owner has been notified."
+	}
+	return prefix + " Please try again later or contact the owner."
 }
 
 // issueBundle issues a fresh client certificate with the loaded CA and packs it
