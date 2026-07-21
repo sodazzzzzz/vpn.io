@@ -88,6 +88,10 @@ mkdir -p "$PKGROOT/Applications" "$PKGROOT/usr/local/bin" "$PKGROOT/Library/Laun
 # strip xattrs and sign by hand — same workaround as build-dmg.sh).
 APP="$PKGROOT/Applications/$APP_NAME.app"
 cp -R "$BUILT_APP" "$APP"
+# Ship the uninstaller inside the bundle (before signing, so it's covered by the
+# signature) so the .pkg install can be undone — otherwise the root daemon and
+# its 0666 socket linger with no removal path (#150).
+install -m 0755 "$MACOS/uninstall.sh" "$APP/Contents/Resources/uninstall.sh"
 xattr -cr "$APP"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"

@@ -16,13 +16,13 @@ vpn.io распространяется не через App Store / Microsoft St
 Установщик кладёт приложение и фоновую службу, которая запускается сама. Дальше
 vpn.io открывается обычным двойным кликом.
 
-Удалить можно так (в Терминале, один раз спросит пароль):
+Удалить можно одной командой (спросит пароль), затем перетащить приложение в Корзину:
 
 ```
-sudo launchctl bootout system/io.vpnio.helper
-sudo rm -f /Library/LaunchDaemons/io.vpnio.helper.plist /usr/local/bin/vpn-helper
-sudo rm -rf /Applications/vpn.io.app
+sudo /Applications/vpn.io.app/Contents/Resources/uninstall.sh
 ```
+
+Скрипт останавливает root-демон и удаляет хелпер, сокет (0666), лог, конфиг ротации и receipt пакета — иначе они остаются работать после удаления приложения. В конце перетащите `vpn.io.app` в Корзину.
 
 ## Linux (Debian / Ubuntu)
 
