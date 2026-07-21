@@ -36,6 +36,7 @@ func main() {
 		recMax     = flag.Duration("reconnect-max", 60*time.Second, "max reconnect backoff")
 		logLevel   = flag.String("log-level", "info", "debug|info|warn|error")
 		clearFW    = flag.Bool("clear-firewall", false, "remove any leftover leak-protection/kill-switch firewall rules and exit (best-effort; recovers a network locked after a crash)")
+		allowLeak  = flag.Bool("allow-insecure-leak", false, "at full-tunnel, connect even if leak protection can't be enabled (UNSAFE: IPv6/traffic may bypass the tunnel). Default refuses to connect rather than leak")
 	)
 	flag.Parse()
 
@@ -74,6 +75,8 @@ func main() {
 		Keepalive:    *keepalive,
 		ReconnectMin: *recMin,
 		ReconnectMax: *recMax,
+
+		AllowInsecureLeak: *allowLeak,
 	}
 
 	cli, err := client.New(cfg, dev, log)
