@@ -84,6 +84,12 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Once the first signal cancels ctx, restore the default signal disposition
+	// so a SECOND Ctrl-C / SIGTERM force-kills the process even if Run's teardown
+	// wedges on a hung external command (networksetup / ip / nft). Otherwise
+	// NotifyContext keeps swallowing signals until Run returns, and only SIGKILL
+	// works — which then leaves DNS/routes applied.
+	context.AfterFunc(ctx, stop)
 
 	if err := cli.Run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "vpn-client:", err)
