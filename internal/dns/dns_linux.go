@@ -5,7 +5,6 @@ package dns
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -37,13 +36,7 @@ type linuxRunner struct {
 }
 
 func (r *linuxRunner) Apply(servers []string, iface string) error {
-	// DNS servers come from the (semi-trusted) VPN server; keep only bare
-	// IPs so a malicious push can't inject extra resolv.conf directives via
-	// embedded newlines or arbitrary text.
-	servers = validIPs(servers)
-	if len(servers) == 0 {
-		return fmt.Errorf("dns: no valid resolver addresses in push")
-	}
+	// servers are already filtered to bare IPs by Manager.Apply (cross-platform).
 	if useResolvectl() {
 		return r.applyResolvectl(servers, iface)
 	}
@@ -59,18 +52,6 @@ func (r *linuxRunner) Restore() error {
 	default:
 		return nil
 	}
-}
-
-// validIPs returns only the entries that parse as a bare IP address.
-func validIPs(servers []string) []string {
-	var out []string
-	for _, s := range servers {
-		s = strings.TrimSpace(s)
-		if net.ParseIP(s) != nil {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // useResolvectl reports whether systemd-resolved is the active resolver:
@@ -167,7 +148,8 @@ func symlinkAtomic(target, path string) error {
 }
 
 // buildResolvConf renders the resolv.conf body for servers. Callers pass
-// pre-validated IPs (Apply runs validIPs first). Pure, so it's unit-testable.
+// pre-validated IPs (Manager.Apply runs validIPs first). Pure, so it's
+// unit-testable.
 func buildResolvConf(servers []string) []byte {
 	var b strings.Builder
 	b.WriteString("# Managed by vpn.io while the tunnel is up\n")

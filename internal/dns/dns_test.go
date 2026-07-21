@@ -105,3 +105,40 @@ func TestRemove_BeforeApplyIsNoOp(t *testing.T) {
 		t.Fatalf("Restore called %d times, want 0", r.restoreCalls)
 	}
 }
+
+// Apply must filter the semi-trusted pushed list down to bare IPs before any
+// platform runner sees it — the fix for macOS/Windows handing raw tokens to
+// networksetup/netsh. Cross-platform because it goes through Manager, not a
+// per-OS runner.
+func TestApply_FiltersInvalidBeforeRunner(t *testing.T) {
+	r := &mockRunner{}
+	m := newWithRunner(discard(), "utun4", r)
+	if err := m.Apply([]string{
+		"1.1.1.1",
+		"1.1.1.1\nsearch attacker.com", // newline injection → dropped
+		"empty",                        // literal that clears DNS on macOS → dropped
+		"  9.9.9.9  ",                  // trimmed → kept
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	want := []applyCall{{servers: []string{"1.1.1.1", "9.9.9.9"}, iface: "utun4"}}
+	if !reflect.DeepEqual(r.applyCalls, want) {
+		t.Fatalf("runner saw %+v, want only valid IPs %+v", r.applyCalls, want)
+	}
+}
+
+// A push with entries but no valid IP is an error, and the runner is never
+// called — better a failed connect than clearing/garbaging the resolver.
+func TestApply_AllInvalidReturnsErrorAndSkipsRunner(t *testing.T) {
+	r := &mockRunner{}
+	m := newWithRunner(discard(), "utun4", r)
+	if err := m.Apply([]string{"not-an-ip", "empty"}); err == nil {
+		t.Fatal("expected error for a push with no valid addresses")
+	}
+	if len(r.applyCalls) != 0 {
+		t.Fatalf("runner was called with invalid input: %+v", r.applyCalls)
+	}
+	if m.applied {
+		t.Fatal("Manager marked applied despite no valid servers")
+	}
+}

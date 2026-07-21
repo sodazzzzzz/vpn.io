@@ -19,6 +19,8 @@ package dns
 import (
 	"fmt"
 	"log/slog"
+	"net"
+	"strings"
 )
 
 // Runner abstracts the OS-specific DNS calls. Implementations are stateful:
@@ -48,6 +50,13 @@ func newWithRunner(log *slog.Logger, iface string, r Runner) *Manager {
 
 // Apply pushes servers as the active resolvers. Calling Apply a second time
 // is rejected — the runner has only one snapshot slot.
+//
+// The server list is semi-trusted (pushed by the VPN server), so it is
+// validated here, before any platform runner sees it — every OS previously
+// relied on Linux-only filtering, letting macOS/Windows hand raw pushed tokens
+// straight to networksetup/netsh (a literal like "empty" even clears DNS on
+// macOS). Keeping only bare IPs blocks resolv.conf-directive injection and
+// stray argv tokens uniformly.
 func (m *Manager) Apply(servers []string) error {
 	if len(servers) == 0 {
 		return nil
@@ -55,12 +64,29 @@ func (m *Manager) Apply(servers []string) error {
 	if m.applied {
 		return fmt.Errorf("dns: Apply called twice without Remove in between")
 	}
+	servers = validIPs(servers)
+	if len(servers) == 0 {
+		return fmt.Errorf("dns: no valid resolver addresses in push")
+	}
 	if err := m.runner.Apply(servers, m.iface); err != nil {
 		return fmt.Errorf("dns: apply: %w", err)
 	}
 	m.applied = true
 	m.log.Info("DNS configured", "servers", servers)
 	return nil
+}
+
+// validIPs returns only the entries that parse as a bare IP address, trimming
+// surrounding whitespace. Anything with embedded text or newlines is dropped.
+func validIPs(servers []string) []string {
+	var out []string
+	for _, s := range servers {
+		s = strings.TrimSpace(s)
+		if net.ParseIP(s) != nil {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Remove restores the snapshot taken by Apply. Errors are logged, not
