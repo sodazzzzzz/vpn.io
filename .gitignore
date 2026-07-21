@@ -6,6 +6,17 @@
 /bin/
 /dist/
 
+# Binaries accidentally built in the repo root (e.g. `go build ./cmd/vpn-ca`,
+# `make ca-init`). Prefer building into /bin/; these anchors keep a stray one
+# out of a commit. .exe variants are covered by *.exe above.
+/vpn-bot
+/vpn-ca
+/vpn-client
+/vpn-ctl
+/vpn-gui
+/vpn-helper
+/vpn-server
+
 # Generated CA material — NEVER commit secrets
 /ca-data/
 *.key
