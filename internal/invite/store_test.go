@@ -169,3 +169,61 @@ func TestTokensAreUnique(t *testing.T) {
 		seen[tok.Value] = true
 	}
 }
+
+// List returns every token in issuance order with its redemption state, for the
+// owner's /invites (#108).
+func TestList(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "tokens.json"))
+	a, err := s.Generate("alice")
+	if err != nil {
+		t.Fatalf("Generate alice: %v", err)
+	}
+	if _, err := s.Generate("bob"); err != nil {
+		t.Fatalf("Generate bob: %v", err)
+	}
+	if _, err := s.Redeem(a.Value, "tg:alice"); err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+
+	tokens, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("List len = %d, want 2", len(tokens))
+	}
+	if tokens[0].ClientName != "alice" || !tokens[0].Used || tokens[0].UsedBy != "tg:alice" {
+		t.Errorf("alice entry wrong: %+v", tokens[0])
+	}
+	if tokens[1].ClientName != "bob" || tokens[1].Used {
+		t.Errorf("bob entry wrong: %+v", tokens[1])
+	}
+}
+
+// List on a store that was never written (fresh bot) is empty, not an error, so
+// /invites can answer before any token is issued.
+func TestList_FreshStoreIsEmpty(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "nope", "tokens.json"))
+	tokens, err := s.List()
+	if err != nil {
+		t.Fatalf("List on fresh store: %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("fresh store List len = %d, want 0", len(tokens))
+	}
+}
+
+func TestExpired_ExportedWrapper(t *testing.T) {
+	now := time.Now()
+	fresh := Token{Created: now}
+	old := Token{Created: now.Add(-2 * time.Hour)}
+	if Expired(fresh, time.Hour, now) {
+		t.Error("fresh token reported expired")
+	}
+	if !Expired(old, time.Hour, now) {
+		t.Error("old token not reported expired")
+	}
+	if Expired(old, 0, now) {
+		t.Error("ttl=0 should disable expiry")
+	}
+}

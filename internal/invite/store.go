@@ -105,6 +105,31 @@ func (s *Store) Generate(clientName string) (Token, error) {
 	return tok, nil
 }
 
+// List returns every token in the store, issued and redeemed, in issuance
+// order — for the owner's /invites (and `vpn-bot list`). Callers MUST NOT print
+// Token.Value: possession of an unused value is a live credential.
+func (s *Store) List() ([]Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := filelock.Acquire(s.Path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Unlock() }()
+	f, err := s.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	return f.Tokens, nil
+}
+
+// Expired reports whether t has passed ttl as of now (ttl <= 0 disables
+// expiry). Exported so a lister can label a token EXPIRED without duplicating
+// the TTL rule that Redeem enforces.
+func Expired(t Token, ttl time.Duration, now time.Time) bool {
+	return tokenExpired(t.Created, ttl, now)
+}
+
 // Redeem marks the token with the given value used (recording usedBy for audit)
 // and returns the client name to issue. It returns ErrNotFound when no unused
 // token matches, so an already-redeemed or unknown value can't issue a second
