@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/govpn/internal/filelock"
 )
 
 // maxFileBytes caps how much load reads, so a corrupt/tampered file can't
@@ -143,6 +145,16 @@ func (s *Store) Add(serial *big.Int, name string) (added bool, err error) {
 	key := serialHex(serial)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Cross-process lock: the bot and the vpn-ca CLI (and, since the serial
+	// ledger, every /invite via revokeSuperseded) each hold their own Store with
+	// its own mutex over this one file. Without a file lock two concurrent
+	// load-modify-save cycles race and the second rename silently drops the
+	// first's revocation.
+	lock, err := filelock.Acquire(s.Path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Unlock() }()
 	f, err := loadOrEmpty(s.Path)
 	if err != nil {
 		return false, err
@@ -170,6 +182,11 @@ func (s *Store) RemoveSerial(serial *big.Int) (bool, error) {
 	key := serialHex(serial)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := filelock.Acquire(s.Path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Unlock() }()
 	f, err := loadOrEmpty(s.Path)
 	if err != nil {
 		return false, err
@@ -199,6 +216,11 @@ func (s *Store) RemoveSerial(serial *big.Int) (bool, error) {
 func (s *Store) Remove(name string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := filelock.Acquire(s.Path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = lock.Unlock() }()
 	f, err := loadOrEmpty(s.Path)
 	if err != nil {
 		return 0, err

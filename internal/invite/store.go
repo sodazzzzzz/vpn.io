@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/govpn/internal/filelock"
 )
 
 // ErrNotFound is returned by Redeem when no unused token matches the value.
@@ -65,6 +67,14 @@ func (s *Store) Generate(clientName string) (Token, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Cross-process lock so a concurrent Redeem (or another Generate) in a second
+	// process can't overwrite this write — a lost update here resurrects a spent
+	// token and breaks single-use.
+	lock, err := filelock.Acquire(s.Path)
+	if err != nil {
+		return Token{}, err
+	}
+	defer func() { _ = lock.Unlock() }()
 	f, err := s.loadLocked()
 	if err != nil {
 		return Token{}, err
@@ -87,6 +97,11 @@ func (s *Store) Redeem(value, usedBy string) (clientName string, err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := filelock.Acquire(s.Path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = lock.Unlock() }()
 	f, err := s.loadLocked()
 	if err != nil {
 		return "", err
