@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"bytes"
 	"crypto/x509"
 	"net"
 	"os"
@@ -256,5 +257,50 @@ func TestClientSerialsFallsBackToCertOnDisk(t *testing.T) {
 
 	if _, err := ClientSerials(dir, "nobody"); err == nil {
 		t.Error("ClientSerials succeeded for a name that was never issued")
+	}
+}
+
+// A client name is turned into a path under clients/, so IssueClient must
+// reject anything that escapes that directory — otherwise
+// "issue-client -name ../server/server" overwrites the server's cert and key.
+func TestIssueClientRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Create(dir, "test CA")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := root.IssueServer("test server", []string{"vpn.example.com"},
+		[]net.IP{net.ParseIP("10.0.0.1")}); err != nil {
+		t.Fatalf("IssueServer: %v", err)
+	}
+
+	serverKey := filepath.Join(dir, "server", "server.key")
+	before, err := os.ReadFile(serverKey)
+	if err != nil {
+		t.Fatalf("read server key: %v", err)
+	}
+
+	for _, name := range []string{
+		"../server/server",
+		"../../escape",
+		"sub/dir",
+		"..",
+		".",
+		"",
+	} {
+		if err := root.IssueClient(name); err == nil {
+			t.Errorf("IssueClient(%q) succeeded, want rejection", name)
+		}
+		if _, err := ClientSerial(dir, name); err == nil {
+			t.Errorf("ClientSerial(%q) succeeded, want rejection", name)
+		}
+	}
+
+	after, err := os.ReadFile(serverKey)
+	if err != nil {
+		t.Fatalf("read server key after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("server private key was overwritten by a traversing client name")
 	}
 }
