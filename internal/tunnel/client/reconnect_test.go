@@ -111,38 +111,100 @@ func TestRunReconnectLoop_CleanExitOnCancelDuringDial(t *testing.T) {
 	}
 }
 
-func TestIsCertError_DetectsTypedAndStringForms(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"unknown CA (typed)", x509.UnknownAuthorityError{}, true},
-		{"invalid cert (typed)", x509.CertificateInvalidError{Reason: x509.Expired}, true},
-		{"hostname mismatch (typed)", x509.HostnameError{Host: "evil.example.com"}, true},
-		{"bad certificate (alert string)", errors.New("remote error: tls: bad certificate"), true},
-		{"unknown CA (alert string)", errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority"), true},
-		{"cert required (alert string)", errors.New("remote error: tls: certificate required"), true},
-		{"unrelated", errors.New("connection refused"), false},
-		{"nil", nil, false},
+func TestCertErrorClassification_LocalVsRemoteAlert(t *testing.T) {
+	// Typed local verify failures → isLocalCertError catches them via errors.As.
+	// We don't feed these to isRemoteCertAlert: production never does either
+	// (classifyConnectError checks isLocalCertError first), and some x509 error
+	// types panic in Error() when built without a Certificate — which is also
+	// why the messages use %T, not %v.
+	typedLocal := []error{
+		x509.UnknownAuthorityError{},
+		x509.CertificateInvalidError{Reason: x509.Expired},
+		x509.HostnameError{Host: "evil.example.com"},
 	}
-	for _, tc := range cases {
-		if got := isCertError(tc.err); got != tc.want {
-			t.Errorf("%s: isCertError(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+	for _, err := range typedLocal {
+		if !isLocalCertError(err) {
+			t.Errorf("isLocalCertError(%T) = false, want true", err)
+		}
+	}
+
+	// A local verify failure that arrives only as a string is still local, and
+	// must not be mistaken for a peer alert.
+	localStr := errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority")
+	if !isLocalCertError(localStr) {
+		t.Error("isLocalCertError(local string) = false, want true")
+	}
+	if isRemoteCertAlert(localStr) {
+		t.Error("isRemoteCertAlert(local string) = true, want false")
+	}
+
+	// Peer alerts: unauthenticated, forgeable — must NOT count as local.
+	remote := []error{
+		errors.New("remote error: tls: bad certificate"),
+		errors.New("remote error: tls: certificate required"),
+		errors.New("remote error: tls: unknown certificate authority"),
+	}
+	for _, err := range remote {
+		if isLocalCertError(err) {
+			t.Errorf("isLocalCertError(%v) = true, want false (spoofable alert)", err)
+		}
+		if !isRemoteCertAlert(err) {
+			t.Errorf("isRemoteCertAlert(%v) = false, want true", err)
+		}
+	}
+
+	for _, err := range []error{errors.New("connection refused"), nil} {
+		if isLocalCertError(err) || isRemoteCertAlert(err) {
+			t.Errorf("%v: classified as a cert error, want neither", err)
 		}
 	}
 }
 
-func TestClassifyConnectError_FatalForCerts_RetryableForRest(t *testing.T) {
-	auth := classifyConnectError(x509.UnknownAuthorityError{})
-	if !errors.Is(auth, ErrFatalAuth) {
-		t.Errorf("unknown CA: got %v, want wrapping ErrFatalAuth", auth)
+func TestClassifyConnectError_LocalFatal_AlertSuspected_RestRetryable(t *testing.T) {
+	// Local verifier failure → fatal now.
+	if got := classifyConnectError(x509.UnknownAuthorityError{}); !errors.Is(got, ErrFatalAuth) {
+		t.Errorf("unknown CA: got %v, want ErrFatalAuth", got)
 	}
-	net := classifyConnectError(errors.New("connection refused"))
-	if errors.Is(net, ErrFatalAuth) {
-		t.Errorf("connection refused: got %v, should NOT wrap ErrFatalAuth", net)
+	// Peer alert (forgeable) → suspected, NOT fatal. This is the #124 fix: a
+	// single forged "bad certificate" must not tear the tunnel down for good.
+	alert := classifyConnectError(errors.New("remote error: tls: bad certificate"))
+	if errors.Is(alert, ErrFatalAuth) {
+		t.Error("bad-certificate alert wrapped ErrFatalAuth; a single forged alert must not be fatal")
+	}
+	if !errors.Is(alert, errSuspectedAuth) {
+		t.Errorf("bad-certificate alert: got %v, want wrapping errSuspectedAuth", alert)
+	}
+	// Unrelated → unchanged/retryable.
+	if got := classifyConnectError(errors.New("connection refused")); errors.Is(got, ErrFatalAuth) || errors.Is(got, errSuspectedAuth) {
+		t.Errorf("connection refused: got %v, want retryable", got)
 	}
 	if classifyConnectError(nil) != nil {
-		t.Errorf("nil err: want nil")
+		t.Error("nil err: want nil")
+	}
+}
+
+func TestSuspectedAuthExit_GivesUpOnlyAfterLimit(t *testing.T) {
+	alert := errSuspectedAuth // errors.Is-matches the wrapped form
+	other := errors.New("connection refused")
+
+	// A run of alerts ends the loop exactly at the limit, not before.
+	streak := 0
+	for i := 1; i < suspectedAuthLimit; i++ {
+		var stop bool
+		if streak, stop = suspectedAuthExit(alert, streak); stop {
+			t.Fatalf("gave up after %d alerts, before the limit of %d", i, suspectedAuthLimit)
+		}
+	}
+	if s, stop := suspectedAuthExit(alert, streak); !stop || s != suspectedAuthLimit {
+		t.Fatalf("at the limit: got (streak=%d, stop=%v), want (%d, true)", s, stop, suspectedAuthLimit)
+	}
+
+	// A non-alert error resets the streak, so alerts must be *consecutive*.
+	streak, _ = suspectedAuthExit(alert, 0)
+	if streak != 1 {
+		t.Fatalf("one alert: streak = %d, want 1", streak)
+	}
+	if s, stop := suspectedAuthExit(other, streak); stop || s != 0 {
+		t.Fatalf("non-alert must reset: got (streak=%d, stop=%v), want (0, false)", s, stop)
 	}
 }
