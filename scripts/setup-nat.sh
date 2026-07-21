@@ -52,17 +52,29 @@ else
     iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE
 fi
 
-# FORWARD policy on some distros defaults to DROP — make sure tunneled
-# traffic can transit. Same idempotency check.
+# FORWARD policy on some distros defaults to DROP, and hosts running Docker or
+# ufw already have terminal REJECT/DROP rules sitting near the top of the
+# FORWARD chain. Appending (-A) would land our ACCEPTs *after* those, where they
+# never match — the script prints "NAT is active" but clients still have no
+# internet. Insert at the top (-I FORWARD 1) so tunneled traffic is accepted
+# before any pre-existing reject. The -C existence check is position-independent,
+# so re-running stays idempotent.
 add_forward_rule() {
     local args=("$@")
     if iptables -C FORWARD "${args[@]}" 2>/dev/null; then
         echo "* FORWARD rule already present: ${args[*]}"
     else
-        echo "* adding FORWARD rule: ${args[*]}"
-        iptables -A FORWARD "${args[@]}"
+        echo "* inserting FORWARD rule at top: ${args[*]}"
+        iptables -I FORWARD 1 "${args[@]}"
     fi
 }
+
+# Let the operator know when the FORWARD chain isn't ours alone: ufw/Docker put
+# their own reject/jump rules here, and our rules only work because we insert
+# above them.
+if iptables -S FORWARD 2>/dev/null | grep -qiE 'ufw|docker'; then
+    echo "* note: FORWARD already contains ufw/Docker rules — inserting ours at the top to take effect before them" >&2
+fi
 
 add_forward_rule -s "$SUBNET" -o "$WAN" -j ACCEPT
 add_forward_rule -d "$SUBNET" -i "$WAN" -m state --state RELATED,ESTABLISHED -j ACCEPT
