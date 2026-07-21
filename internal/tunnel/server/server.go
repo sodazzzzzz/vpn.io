@@ -403,6 +403,15 @@ func (s *Server) sessionReader(sess *Session) {
 				s.log.Debug("isolation drop", "cn", sess.CN, "dst", dst)
 				continue
 			}
+			if len(body) > s.cfg.MTU {
+				// device.Write silently drops anything over MTU (returns len,nil),
+				// so an oversize frame would vanish with no log or error — an
+				// undiagnosable black hole that looks like a working path. A
+				// client can send frames up to ~64 KiB; enforce the MTU contract
+				// at the trust boundary instead.
+				s.log.Debug("oversize packet dropped", "cn", sess.CN, "len", len(body), "mtu", s.cfg.MTU)
+				continue
+			}
 			s.tunWriteMu.Lock()
 			_, werr := s.tun.Write(body)
 			s.tunWriteMu.Unlock()
