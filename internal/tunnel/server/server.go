@@ -145,7 +145,7 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		cfg.HandshakeTimeout = defaultHandshakeTimeout
 	}
 
-	return &Server{
+	srv := &Server{
 		cfg:       cfg,
 		log:       log,
 		tlsConfig: tlsCfg,
@@ -155,7 +155,18 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		limiter:   newConnLimiter(cfg.MaxConnsPerIP, cfg.MaxConns, failedHandshakePenalty),
 		readyCh:   make(chan struct{}),
 		closeCh:   make(chan struct{}),
-	}, nil
+	}
+	// The failed-handshake throttle needs BOTH caps to be active (see
+	// connLimiter.throttleActive). cmd/vpn-server defaults them on, but a caller
+	// that zeroes either — an embedder using the struct's zero value, or an
+	// operator passing -max-conns 0 — silently loses flood protection: a source
+	// can retry failed TLS handshakes as fast as its CPU allows. Say so loudly
+	// rather than letting "protected" be assumed.
+	if !srv.limiter.throttleActive() {
+		log.Warn("server: handshake-flood throttle is OFF — failed TLS handshakes are not rate-limited; set both -max-conns-per-ip and -max-conns above 0 to enable it",
+			"max_conns_per_ip", cfg.MaxConnsPerIP, "max_conns", cfg.MaxConns)
+	}
+	return srv, nil
 }
 
 // Ready returns a channel closed when the listener is bound and accepting.
