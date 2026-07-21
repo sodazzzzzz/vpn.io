@@ -42,6 +42,11 @@ import (
 const (
 	defaultHandshakeTimeout = 10 * time.Second
 	failedHandshakePenalty  = 2 * time.Second
+	// kickJoinTimeout bounds how long admission waits for a kicked same-CN
+	// session to finish tearing down. Session.close forces the old conn's
+	// deadline, so this normally returns in milliseconds; the cap stops a wedged
+	// teardown from pinning a reconnect for minutes (#138).
+	kickJoinTimeout = 5 * time.Second
 )
 
 // Config carries every knob the server needs at start-up.
@@ -300,7 +305,17 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	if prev := s.registry.ByCN(cn); prev != nil {
 		s.auditKick(prev, rawConn.RemoteAddr())
 		prev.close()
-		<-prev.Done()
+		// close() forced the old conn's deadline to the past so a writer wedged
+		// on a full TCP buffer (dead network, no RST) unblocks and Done() fires
+		// promptly. Still bound the wait: if teardown stalls for some other
+		// reason, admit anyway rather than pinning this admission goroutine for
+		// minutes (#138). The registry's same-CN guard (Remove only drops the
+		// entry if it's still this session) keeps the Add below safe.
+		select {
+		case <-prev.Done():
+		case <-time.After(kickJoinTimeout):
+			s.log.Warn("previous session slow to tear down; admitting anyway", "cn", cn)
+		}
 	}
 
 	ip, err := s.pool.Allocate(cn)

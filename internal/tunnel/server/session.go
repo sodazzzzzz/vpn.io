@@ -64,7 +64,13 @@ func (s *Session) enqueue(pkt []byte) bool {
 func (s *Session) close() {
 	s.closeOne.Do(func() {
 		close(s.closeCh)
-		// Close the connection too so blocked Reads on it return.
+		// Force a past deadline BEFORE closing: it makes any Read/Write blocked
+		// in-flight on the conn return immediately. TLS Close alone doesn't
+		// interrupt an in-flight Write, so a sessionWriter wedged writing to a
+		// peer whose socket buffer is full on a dead network (no RST) would
+		// otherwise keep its goroutine — and any same-CN reconnect waiting on
+		// Done() — pinned until the kernel's TCP timeout, i.e. minutes (#138).
+		_ = s.Conn.SetDeadline(time.Now())
 		_ = s.Conn.Close()
 	})
 }
