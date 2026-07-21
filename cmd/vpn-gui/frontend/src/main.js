@@ -79,6 +79,15 @@ function hostOf(server) {
   return String(server).replace(/:\d+$/, '');
 }
 
+// looksLikeHelperDown reports whether a Status() failure is the ordinary "the
+// daemon isn't there" case — its control socket can't be dialled because the
+// helper isn't installed or isn't running. Anything else (a decode error, a
+// permission problem) is a real fault worth showing verbatim rather than
+// mislabelling as "not running", which would send the user down the wrong path.
+function looksLikeHelperDown(msg) {
+  return !msg || /connection refused|no such file|not running|cannot connect|connect: |\bdial\b|ECONNREFUSED|ENOENT/i.test(msg);
+}
+
 // Size the native window so the visible view's *content* fits its client area.
 // WindowSetSize sets the OUTER window size, so on Windows (native title bar +
 // borders) we add the real frame: the difference between the outer window
@@ -195,14 +204,19 @@ function applyAction(state) {
   if (actionInFlight) actionBtn.disabled = true;
 }
 
-function render(st, reachable) {
+function render(st, reachable, unreachableMsg) {
   const state = reachable ? st.state : 'disconnected';
   tray.setAttribute('data-state', state);
   stateLabel.textContent = LABELS[state] || state;
 
   let subHTML = '';
   if (!reachable) {
-    subHTML = 'Background helper not running';
+    // The common cause is the helper being down; only then show that line. A
+    // Status() failure for any other reason gets its real message, so a genuine
+    // fault isn't disguised as "not running".
+    subHTML = looksLikeHelperDown(unreachableMsg)
+      ? 'Background helper not running'
+      : escapeHTML(unreachableMsg);
   } else if (state === 'connecting' || state === 'connected') {
     subHTML = st.server ? `<span class="server">${escapeHTML(st.server)}</span>` : '';
   } else if (state === 'reconnecting') {
@@ -266,8 +280,8 @@ async function poll() {
       try {
         const st = await Status();
         render(st, true);
-      } catch (_) {
-        render({ state: 'disconnected' }, false);
+      } catch (e) {
+        render({ state: 'disconnected' }, false, e && e.message ? e.message : String(e));
       }
     } while (pollAgain);
   } finally {
@@ -335,7 +349,18 @@ async function openImport() {
     setCred('ca', p.ca.loaded, p.ca.fileName);
     setCred('cert', p.cert.loaded, p.cert.fileName);
     setCred('key', p.key.loaded, p.key.fileName);
-  } catch (_) { /* fresh form on failure */ }
+  } catch (_) {
+    // Profile() is local and rarely fails, but if it does, actually blank the
+    // form rather than leaving whatever a previous open left in the fields —
+    // otherwise "fresh form" shows stale values.
+    impServer.value = '';
+    impSni.value = '';
+    impMtu.value = '';
+    impTun.value = '';
+    setCred('ca', false, '');
+    setCred('cert', false, '');
+    setCred('key', false, '');
+  }
   actionError = '';
   hideImportError();
   showView('import');
@@ -343,10 +368,21 @@ async function openImport() {
 }
 
 async function saveImport() {
+  // parseInt is too forgiving for a form field: "1500abc" silently becomes 1500
+  // and "abc" becomes NaN → 0 (read as "use the default"). Validate up front so a
+  // typo is a visible error, not a wrong-but-accepted MTU. Blank stays 0 = default.
+  const mtuRaw = impMtu.value.trim();
+  let mtu = 0;
+  if (mtuRaw !== '') {
+    if (!/^\d+$/.test(mtuRaw) || (mtu = parseInt(mtuRaw, 10)) < 576 || mtu > 65535) {
+      showImportError(new Error('MTU must be a whole number between 576 and 65535, or blank for the default (1380).'));
+      return;
+    }
+  }
   const form = {
     server: impServer.value.trim(),
     serverName: impSni.value.trim(),
-    mtu: parseInt(impMtu.value, 10) || 0,
+    mtu,
     tunName: impTun.value.trim(),
   };
   impSave.disabled = true;
