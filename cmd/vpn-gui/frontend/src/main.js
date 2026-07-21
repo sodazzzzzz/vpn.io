@@ -64,6 +64,7 @@ let sinceUnix = 0;          // session-timer origin (0 = not connected)
 let hasProfile = false;     // a complete draft is staged (Connect vs Import)
 let profileServer = '';     // staged server, for the disconnected sub-line / chip
 let actionError = '';       // an immediate Connect failure to surface (e.g. helper down)
+let actionInFlight = false; // a Connect/Disconnect IPC call is pending — keep the button disabled and don't let a poll re-enable it (#135)
 const credLoaded = { ca: false, cert: false, key: false };
 let currentView = 'main';
 
@@ -117,16 +118,22 @@ function updateTimer() {
 // --- main screen ---------------------------------------------------------
 
 async function doDisconnect() {
+  if (actionInFlight) return; // sequence: ignore a click while one IPC call is pending
+  actionInFlight = true;
   actionBtn.disabled = true;
   try {
     await Disconnect();
   } catch (e) {
     console.error('disconnect failed:', e);
+  } finally {
+    actionInFlight = false;
   }
   poll();
 }
 
 async function doConnect() {
+  if (actionInFlight) return; // sequence: don't overlap a pending Connect/Disconnect
+  actionInFlight = true;
   actionError = '';
   actionBtn.disabled = true;
   try {
@@ -136,6 +143,8 @@ async function doConnect() {
     // "Not connected"; render() shows it and the next poll keeps it until the
     // tunnel actually starts.
     actionError = e && e.message ? e.message : String(e);
+  } finally {
+    actionInFlight = false;
   }
   poll();
 }
@@ -178,6 +187,12 @@ function applyAction(state) {
         actionBtn.onclick = openImport;
       }
   }
+
+  // While a Connect/Disconnect IPC call is still in flight, keep the button
+  // disabled regardless of the polled state. Otherwise an interval poll
+  // re-enables it and the user can fire an overlapping/contradictory command —
+  // a pending Connect racing a Cancel, so the tunnel comes up after cancel (#135).
+  if (actionInFlight) actionBtn.disabled = true;
 }
 
 function render(st, reachable) {
@@ -231,22 +246,30 @@ function render(st, reachable) {
 }
 
 let polling = false;
+let pollAgain = false;
 async function poll() {
-  if (polling) return;
+  // Don't drop a poll requested while one is in flight (the post-action poll in
+  // doConnect/doDisconnect used to be silently skipped by an interval poll,
+  // leaving the UI on stale state) — flag it and re-run once the current one
+  // finishes (#135).
+  if (polling) { pollAgain = true; return; }
   polling = true;
   try {
-    try {
-      const p = await Profile();
-      hasProfile = p.hasProfile;
-      profileServer = p.server;
-    } catch (_) { /* Profile is local; ignore the rare failure */ }
+    do {
+      pollAgain = false;
+      try {
+        const p = await Profile();
+        hasProfile = p.hasProfile;
+        profileServer = p.server;
+      } catch (_) { /* Profile is local; ignore the rare failure */ }
 
-    try {
-      const st = await Status();
-      render(st, true);
-    } catch (_) {
-      render({ state: 'disconnected' }, false);
-    }
+      try {
+        const st = await Status();
+        render(st, true);
+      } catch (_) {
+        render({ state: 'disconnected' }, false);
+      }
+    } while (pollAgain);
   } finally {
     polling = false;
   }
