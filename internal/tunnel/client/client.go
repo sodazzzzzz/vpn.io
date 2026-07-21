@@ -92,6 +92,14 @@ type Config struct {
 	// Default: 10s.
 	HandshakeTimeout time.Duration
 
+	// AllowInsecureLeak keeps a full-tunnel session up even when leak
+	// protection (the IPv6 block on macOS/Windows, the kill-switch on Linux)
+	// can't be enabled. The default (false) is fail-closed: rather than come up
+	// "protected" while IPv6 leaks past the tunnel, the connection is refused.
+	// Set it only on a host that can't run the firewall and knowingly accepts
+	// the exposure (vpn-client's --allow-insecure-leak).
+	AllowInsecureLeak bool
+
 	// OnState, if non-nil, is invoked on connection-state transitions so an
 	// embedding daemon can report status. It is called only from Run's
 	// reconnect-loop goroutine (never concurrently) and must not block.
@@ -373,8 +381,12 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 
 	// Enable leak protection BEFORE flipping the IPv4 default into the
 	// tunnel, so there's no window where v4 is already tunnelled but
-	// traffic still leaks out the open interface.
-	c.ensureLeakProtection(assign, tlsConn.RemoteAddr())
+	// traffic still leaks out the open interface. Fail-closed: if it can't be
+	// established (and the user hasn't opted into --allow-insecure-leak), abort
+	// rather than come up leaking.
+	if err := c.ensureLeakProtection(assign, tlsConn.RemoteAddr()); err != nil {
+		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
+	}
 
 	if err := c.ensureRoutes(assign, tlsConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("%w: %v", ErrFatalConfig, err)
@@ -508,27 +520,28 @@ func (c *Client) preparePath(serverIP netip.Addr) {
 // would otherwise leak all IPv6 out the open interface). On reconnects (or
 // split-tunnel) it's a no-op.
 //
-// Failure is deliberately NON-fatal: a host without nft / an OS firewall
-// shouldn't be unable to connect at all. We log loudly once and carry on.
-// The failure causes (tool missing, no privileges) are static for the
-// process, so we don't retry or re-warn on every reconnect. Hardening to
-// fail-closed is tracked as follow-up.
-func (c *Client) ensureLeakProtection(a tunnel.AssignIP, remote net.Addr) {
+// Failure is fail-closed: if protection can't be established the connection is
+// refused (returns an error), so a full-tunnel session never comes up
+// "protected" while traffic leaks past it. The failure causes (tool missing,
+// no privileges) are static, so wrapping in ErrFatalConfig stops the reconnect
+// loop rather than looping forever. Config.AllowInsecureLeak (vpn-client
+// --allow-insecure-leak) opts back into the old warn-and-continue for a host
+// that can't run the firewall and knowingly accepts the exposure — see
+// leakProtectionUnavailable.
+func (c *Client) ensureLeakProtection(a tunnel.AssignIP, remote net.Addr) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.leakguard != nil || c.leakguardOff {
-		return
+		return nil
 	}
 	if !isFullTunnel(a.Routes) {
-		return
+		return nil
 	}
 
 	serverIP, err := serverIPFromRemote(remote)
 	if err != nil {
-		c.log.Warn("leak protection skipped: cannot determine server IP", "err", err)
-		c.leakguardOff = true
-		return
+		return c.leakProtectionUnavailable("cannot determine server IP for leak protection", err)
 	}
 
 	mgr := firewall.New(c.log)
@@ -538,11 +551,29 @@ func (c *Client) ensureLeakProtection(a tunnel.AssignIP, remote net.Addr) {
 		AllowLAN: true, // local networks stay reachable (LAN devices, DHCP)
 	}
 	if err := mgr.Enable(cfg); err != nil {
-		c.log.Warn("leak protection failed; traffic may bypass the tunnel — check privileges, or run 'vpn-client --clear-firewall' to unstick the network", "err", err)
-		c.leakguardOff = true
-		return
+		return c.leakProtectionUnavailable("could not enable leak protection", err)
 	}
 	c.leakguard = mgr
+	return nil
+}
+
+// leakProtectionUnavailable decides what happens when full-tunnel leak
+// protection can't be established. Full-tunnel redirects the IPv4 default into
+// the tunnel; without the leak guard (an IPv6 block on macOS/Windows, a
+// kill-switch on Linux) IPv6 — and, on a tunnel drop, everything — would escape
+// the open interface while the UI still says "protected". So the default is
+// fail-closed: return an error and let the caller abort the connection, rather
+// than come up leaking. Config.AllowInsecureLeak restores the old
+// warn-and-continue for a host that can't run the firewall and knowingly
+// accepts the exposure. The caller holds c.mu.
+func (c *Client) leakProtectionUnavailable(what string, cause error) error {
+	if c.cfg.AllowInsecureLeak {
+		c.log.Warn("leak protection unavailable; continuing anyway (--allow-insecure-leak): traffic may bypass the tunnel — check privileges, or run 'vpn-client --clear-firewall' to unstick the network",
+			"what", what, "err", cause)
+		c.leakguardOff = true
+		return nil
+	}
+	return fmt.Errorf("%s: %w — refusing to connect so traffic can't leak past the tunnel; fix privileges/tooling, or pass --allow-insecure-leak to connect without it", what, cause)
 }
 
 // serverIPFromRemote extracts the VPN server's IP from the TLS connection's

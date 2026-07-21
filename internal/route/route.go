@@ -94,6 +94,19 @@ func (m *Manager) Install(cidrs []string) error {
 	if !m.tunGW.IsValid() {
 		return fmt.Errorf("route: tunnel gateway not set")
 	}
+	// This package installs IPv4 routes only (the data plane is IPv4). The
+	// pin-hole and the tunnel gateway are our own inputs — not server-pushed
+	// CIDRs — so they never reach the non-IPv4 filter in the push loop below;
+	// guard them here. Without this, an IPv6 server address (a native-IPv6-only
+	// resolution) would reach the per-OS runner as an IPv6 /128 and fail deep
+	// inside a privileged process (on Windows it used to panic), dropping the
+	// whole connection with an opaque error. Fail early and clearly instead.
+	if !m.server.Is4() {
+		return fmt.Errorf("route: server address %s is IPv6; this client routes IPv4 only — connect via an IPv4 server address", m.server)
+	}
+	if !m.tunGW.Is4() {
+		return fmt.Errorf("route: tunnel gateway %s is IPv6; the IPv4-only data plane can't use it", m.tunGW)
+	}
 
 	gw, err := m.runner.DefaultGateway()
 	if err != nil {
@@ -120,8 +133,14 @@ func (m *Manager) Install(cidrs []string) error {
 		// treat them as untrusted input and drop what we can't install rather
 		// than failing the whole connection: a dual-stack server should still
 		// be usable by an IPv4-only client.
+		//
+		// Dropping an IPv6 push does NOT leak it: at full-tunnel the client's
+		// leak guard (internal/firewall) is enabled first and blocks IPv6
+		// outright (a kill-switch on Linux, an IPv6 block on macOS/Windows), so
+		// IPv6 destinations are dropped, not sent around the tunnel. Routes are
+		// the IPv4 half of the story; leak protection is the IPv6 half.
 		if !prefix.Addr().Is4() {
-			m.log.Warn("route: ignoring non-IPv4 pushed route", "cidr", raw)
+			m.log.Warn("route: ignoring non-IPv4 pushed route (IPv6 is dropped by leak protection, not routed)", "cidr", raw)
 			continue
 		}
 		for _, p := range expandDefault(prefix) {

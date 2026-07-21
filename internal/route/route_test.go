@@ -232,6 +232,25 @@ func TestInstall_BadCIDR(t *testing.T) {
 	}
 }
 
+// The route manager is IPv4-only. An IPv6 server address (a native-IPv6-only
+// resolution) must be rejected up front with a clear error — not handed to the
+// per-OS runner where it fails deep in a privileged process (on Windows it used
+// to panic), taking the whole connection down opaquely. No routes are touched.
+func TestInstall_RejectsIPv6Server(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("2001:db8::1"), // IPv6 server
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err == nil {
+		t.Fatal("expected Install to reject an IPv6 server address")
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("no routes should be added for an IPv6 server, got %+v", r.calls)
+	}
+}
+
 func TestInstall_DefaultGatewayError(t *testing.T) {
 	r := &mockRunner{defaultGWErr: errors.New("nope")}
 	m := newWithRunner(discard(), "utun4",
