@@ -3,6 +3,7 @@ package ipc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -77,5 +78,101 @@ func TestServeWaitsForInflightHandlers(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve did not return after the handler finished")
+	}
+}
+
+// staticListener drives Serve's accept loop deterministically: Accept returns
+// whatever accept yields; Close and Addr are no-ops.
+type staticListener struct {
+	accept func() (net.Conn, error)
+}
+
+func (l staticListener) Accept() (net.Conn, error) {
+	return l.accept()
+}
+
+func (l staticListener) Close() error {
+	return nil
+}
+
+func (l staticListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: "mock", Net: "unix"}
+}
+
+func TestNextAcceptDelay_BacksOffAndCaps(t *testing.T) {
+	if d := nextAcceptDelay(0); d != 5*time.Millisecond {
+		t.Fatalf("first delay = %v, want 5ms", d)
+	}
+	d := time.Duration(0)
+	for i := 0; i < 20; i++ {
+		d = nextAcceptDelay(d)
+	}
+	if d != time.Second {
+		t.Fatalf("saturated delay = %v, want the 1s cap", d)
+	}
+}
+
+// A persistently broken listener makes Serve give up (return an error) instead
+// of hanging or spinning — but only after several retries, not the first failure.
+func TestServe_GivesUpAfterPersistentAcceptErrors(t *testing.T) {
+	var calls int
+	ln := staticListener{accept: func() (net.Conn, error) {
+		calls++
+		return nil, errors.New("permanent")
+	}}
+	srv := NewServer(ln, nil, nil)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Serve returned nil on a broken listener; want an error")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Serve did not give up on a persistently broken listener")
+	}
+	// calls is safe to read here: the Serve goroutine has returned (channel
+	// receive above establishes happens-before).
+	if calls < maxAcceptFailures {
+		t.Errorf("gave up after %d accepts, want at least %d", calls, maxAcceptFailures)
+	}
+}
+
+// A transient error must NOT tear the daemon down: Serve retries and keeps
+// running (the live tunnel survives). ctx-cancel then ends it cleanly. This is
+// the #131 regression — one recoverable Accept error used to kill the daemon.
+func TestServe_SurvivesTransientAcceptError(t *testing.T) {
+	block := make(chan struct{})
+	var n int
+	ln := staticListener{accept: func() (net.Conn, error) {
+		n++
+		if n <= 2 {
+			return nil, errors.New("transient")
+		}
+		<-block // quiet, healthy listener: no more connections
+		return nil, net.ErrClosed
+	}}
+	srv := NewServer(ln, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Serve exited early (%v) instead of retrying past transient errors", err)
+	case <-time.After(300 * time.Millisecond):
+		// good: still accepting after the transient errors
+	}
+	cancel()
+	close(block)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve after cancel returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancel")
 	}
 }

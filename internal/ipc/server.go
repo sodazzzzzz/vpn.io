@@ -66,6 +66,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	var wg sync.WaitGroup
+	var acceptFails int
+	var retryDelay time.Duration
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
@@ -73,18 +75,54 @@ func (s *Server) Serve(ctx context.Context) error {
 				wg.Wait()
 				return nil // shutdown closed the listener
 			}
-			// Unauthorized peers are filtered inside the listener's Accept
-			// (it closes them and loops), so anything surfacing here is a
-			// real listener failure.
-			wg.Wait()
-			return fmt.Errorf("ipc: accept: %w", err)
+			// A transient listener error (fd exhaustion — EMFILE, a connection
+			// aborted before Accept, an interrupted syscall) is recoverable. The
+			// control plane must NOT tear the live tunnel down over a momentary
+			// condition, so back off and keep accepting. Give up only when
+			// failures persist with no success in between — a genuinely broken
+			// listener — rather than spinning forever. (net.Error.Temporary is
+			// deprecated and the relevant errnos aren't portable, so we classify
+			// by persistence instead of type.)
+			acceptFails++
+			if acceptFails >= maxAcceptFailures {
+				wg.Wait()
+				return fmt.Errorf("ipc: accept failed %d times in a row: %w", acceptFails, err)
+			}
+			retryDelay = nextAcceptDelay(retryDelay)
+			s.log.Warn("ipc: transient accept error; retrying",
+				"err", err, "in", retryDelay, "streak", acceptFails)
+			select {
+			case <-time.After(retryDelay):
+			case <-ctx.Done():
+				wg.Wait()
+				return nil
+			}
+			continue
 		}
+		acceptFails, retryDelay = 0, 0
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			s.handle(conn)
 		}()
 	}
+}
+
+// maxAcceptFailures bounds consecutive Accept failures before Serve gives up. A
+// transient blip recovers well within this; a genuinely dead listener shouldn't
+// spin forever.
+const maxAcceptFailures = 10
+
+// nextAcceptDelay is the exponential backoff (5ms doubling, capped at 1s)
+// applied between failed Accepts.
+func nextAcceptDelay(d time.Duration) time.Duration {
+	if d == 0 {
+		return 5 * time.Millisecond
+	}
+	if d *= 2; d > time.Second {
+		return time.Second
+	}
+	return d
 }
 
 func (s *Server) handle(conn net.Conn) {
