@@ -119,12 +119,13 @@ type Client struct {
 	log       *slog.Logger
 	tlsConfig *tls.Config
 
-	mu           sync.Mutex
-	configuredIP string            // empty until first AssignIP triggers tun.Configure
-	routes       *route.Manager    // non-nil after first successful Install
-	resolvers    *dns.Manager      // non-nil after first successful Apply
-	leakguard    *firewall.Manager // non-nil after IPv6 leak protection is enabled
-	leakguardOff bool              // a block attempt failed; don't retry/re-warn each reconnect
+	mu             sync.Mutex
+	configuredIP   string            // empty until first AssignIP triggers tun.Configure
+	routes         *route.Manager    // non-nil after first successful Install
+	resolvers      *dns.Manager      // non-nil after first successful Apply
+	leakguard      *firewall.Manager // non-nil after IPv6 leak protection is enabled
+	leakguardOff   bool              // a block attempt failed; don't retry/re-warn each reconnect
+	pinnedServerIP netip.Addr        // server IP the pin-hole/kill-switch currently allow
 }
 
 // New constructs a Client. dev must already be Open()ed; ownership stays
@@ -292,15 +293,24 @@ func (c *Client) runDevicePoller(ctx context.Context, outbound chan<- []byte) {
 // (wrapping one of the sentinels) if the failure shouldn't be retried.
 // Otherwise returns a retryable error.
 func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error {
-	// On a reconnect the system routes from the first connect are still in
-	// place, so the dial to the server must pass through the server pin-hole. A
-	// network change (e.g. Wi-Fi drop then rejoin) can flush or stale that
-	// pin-hole, after which the server's IP falls under the tunnel split-routes
-	// and the dial blackholes — re-pin it via the current default gateway first.
-	c.refreshServerPinhole()
+	// Resolve the server ourselves so we can pin the exact address we dial. A
+	// server behind DNS (DDNS / failover / round-robin) can move between
+	// reconnects; letting the dialer resolve would connect to the new IP while
+	// the pin-hole and kill-switch still allow only the old one, black-holing
+	// the dial (#126).
+	serverIP, port, err := c.resolveServer(ctx)
+	if err != nil {
+		return err // retryable: DNS may recover
+	}
+	// Before dialing, re-point the pin-hole (and kill-switch) at serverIP — both
+	// to follow a moved server and to re-assert the route across a local network
+	// change (Wi-Fi drop/rejoin) that may have flushed the pin-hole.
+	c.preparePath(serverIP)
 
 	dialer := &tls.Dialer{Config: c.tlsConfig}
-	conn, err := dialer.DialContext(ctx, "tcp", c.cfg.Server)
+	// Dial the resolved IP, not the hostname: tlsConfig.ServerName still carries
+	// the hostname, so SNI and certificate verification are unchanged.
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(serverIP.String(), port))
 	if err != nil {
 		return classifyConnectError(err)
 	}
@@ -421,23 +431,72 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 	return nil
 }
 
-// refreshServerPinhole re-pins the server route through the current default
-// gateway before a reconnect dial. It's a no-op on the first connect (routes
-// aren't installed yet — the normal default route reaches the server, and the
-// pin-hole is added afterwards by ensureRoutes). Best-effort: if the gateway
-// can't be determined yet (e.g. the network is still down right after a Wi-Fi
-// drop), the failure is logged and we still attempt the dial, which then fails
-// and retries as before. So this never makes reconnect worse — it only recovers
-// the case where a network change flushed the pin-hole and left the server
-// unreachable through the dead tunnel (the Windows "eternal reconnect" bug).
-func (c *Client) refreshServerPinhole() {
+// resolveServer resolves the configured Server (host:port) into a concrete IP
+// and port string. A hostname goes through the system resolver; an IP literal
+// is returned as-is. We resolve here — rather than let the dialer do it — so the
+// address we pin is exactly the address we dial (#126). IPv4 is preferred: the
+// data plane is IPv4-only.
+func (c *Client) resolveServer(ctx context.Context) (netip.Addr, string, error) {
+	host, port, err := net.SplitHostPort(c.cfg.Server)
+	if err != nil {
+		return netip.Addr{}, "", fmt.Errorf("client: bad server address %q: %w", c.cfg.Server, err)
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap(), port, nil
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return netip.Addr{}, "", fmt.Errorf("client: resolve %q: %w", host, err)
+	}
+	var fallback netip.Addr
+	for _, ip := range ips {
+		ip = ip.Unmap()
+		if ip.Is4() {
+			return ip, port, nil
+		}
+		if !fallback.IsValid() {
+			fallback = ip
+		}
+	}
+	if fallback.IsValid() {
+		return fallback, port, nil
+	}
+	return netip.Addr{}, "", fmt.Errorf("client: no addresses for %q", host)
+}
+
+// preparePath re-points the server pin-hole and, on Linux, the kill-switch at
+// serverIP before a (re)connect dial. It's a no-op on the first connect — the
+// managers aren't built yet, and ensureRoutes/ensureLeakProtection will pin the
+// IP we dial. Re-pointing the pin-hole also re-asserts it across a local network
+// change (Wi-Fi drop/rejoin) that may have flushed it (the "eternal reconnect"
+// case). Best-effort: a failure is logged and the dial proceeds (and then
+// fails/retries), so this never makes reconnect worse.
+func (c *Client) preparePath(serverIP netip.Addr) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.routes == nil {
-		return
+
+	if c.routes != nil {
+		if err := c.routes.PinServer(serverIP); err != nil {
+			c.log.Debug("server pin-hole prepare skipped", "err", err)
+		}
 	}
-	if err := c.routes.RefreshServerPinhole(); err != nil {
-		c.log.Debug("server pin-hole refresh skipped", "err", err)
+
+	// If the server moved, the kill-switch still allows only the old IP and
+	// would block the dial to the new one — re-point it. Brief window where leak
+	// protection is down, but we're already disconnected here, and this only
+	// runs when the resolved IP actually changed.
+	if c.leakguard != nil && c.pinnedServerIP.IsValid() && serverIP != c.pinnedServerIP {
+		c.leakguard.Remove()
+		cfg := firewall.Config{ServerIP: serverIP, TunIface: c.dev.Name(), AllowLAN: true}
+		if err := c.leakguard.Enable(cfg); err != nil {
+			c.log.Warn("re-pointing leak protection failed; run 'vpn-client --clear-firewall' if the network is stuck", "err", err)
+			c.leakguardOff = true
+			c.leakguard = nil
+		}
+	}
+
+	if serverIP.IsValid() {
+		c.pinnedServerIP = serverIP
 	}
 }
 

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -46,5 +47,26 @@ func TestEffectiveMTU_NarrowsButDoesNotWiden(t *testing.T) {
 		if got := effectiveMTU(dev, tc.pushed); got != tc.want {
 			t.Errorf("effectiveMTU(%d, %d) = %d, want %d", dev, tc.pushed, got, tc.want)
 		}
+	}
+}
+
+// An IP-literal Server resolves to exactly that IP with no DNS lookup — so we
+// pin the address we're about to dial (#126).
+func TestResolveServer_IPLiteralNeedsNoDNS(t *testing.T) {
+	c := &Client{cfg: Config{Server: "203.0.113.5:8443"}}
+	ip, port, err := c.resolveServer(context.Background())
+	if err != nil {
+		t.Fatalf("resolveServer: %v", err)
+	}
+	if ip.String() != "203.0.113.5" || port != "8443" {
+		t.Fatalf("got %s:%s, want 203.0.113.5:8443", ip, port)
+	}
+}
+
+// An address with no port is rejected before any lookup.
+func TestResolveServer_BadAddressErrors(t *testing.T) {
+	c := &Client{cfg: Config{Server: "missing-port"}}
+	if _, _, err := c.resolveServer(context.Background()); err == nil {
+		t.Fatal("want an error for an address without a port")
 	}
 }
