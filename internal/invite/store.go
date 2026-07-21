@@ -28,6 +28,14 @@ var ErrNotFound = errors.New("invite: token not found or already used")
 // can't balloon memory. Each token is ~150 bytes; this holds tens of thousands.
 const maxStoreBytes = 4 << 20
 
+// DefaultInviteTTL is how long a freshly generated token stays redeemable. An
+// invite is a bearer credential that also travels through a Telegram chat, so
+// it must not live forever — a stale /invite dug out of a compromised account a
+// year later would otherwise still mint a live client cert (#133). A week is
+// enough to hand it over and redeem it. New applies this; set Store.TTL to
+// override, or 0 to disable expiry.
+const DefaultInviteTTL = 7 * 24 * time.Hour
+
 // Token is a one-time invite. Redeeming it issues a client certificate for
 // ClientName.
 type Token struct {
@@ -48,11 +56,16 @@ type fileFormat struct {
 // All operations are safe for concurrent use.
 type Store struct {
 	Path string
-	mu   sync.Mutex
+	// TTL bounds how long a token stays redeemable after Generate stamps it.
+	// Enforced at Redeem (expired tokens can't be redeemed) and swept in
+	// Generate. 0 disables expiry. New sets it to DefaultInviteTTL.
+	TTL time.Duration
+	mu  sync.Mutex
 }
 
-// New returns a Store backed by the file at path.
-func New(path string) *Store { return &Store{Path: path} }
+// New returns a Store backed by the file at path, with tokens expiring after
+// DefaultInviteTTL. Set the returned Store's TTL to override (0 disables expiry).
+func New(path string) *Store { return &Store{Path: path, TTL: DefaultInviteTTL} }
 
 // Generate creates a fresh single-use token for clientName, persists it, and
 // returns it.
@@ -79,7 +92,12 @@ func (s *Store) Generate(clientName string) (Token, error) {
 	if err != nil {
 		return Token{}, err
 	}
-	tok := Token{Value: value, ClientName: clientName, Created: time.Now()}
+	now := time.Now()
+	// Sweep expired, never-redeemed tokens while we're rewriting the file anyway:
+	// they can't be redeemed again and are just dead weight. Used tokens stay as
+	// the audit trail.
+	f.Tokens = pruneExpired(f.Tokens, s.TTL, now)
+	tok := Token{Value: value, ClientName: clientName, Created: now}
 	f.Tokens = append(f.Tokens, tok)
 	if err := s.saveLocked(f); err != nil {
 		return Token{}, err
@@ -106,16 +124,21 @@ func (s *Store) Redeem(value, usedBy string) (clientName string, err error) {
 	if err != nil {
 		return "", err
 	}
+	now := time.Now()
 	valueBytes := []byte(value)
 	for i := range f.Tokens {
 		t := &f.Tokens[i]
-		// Constant-time compare so matching a token doesn't leak, via timing,
-		// how many leading bytes of the secret were guessed correctly. Unused
-		// check first: a spent token can't be redeemed regardless.
-		if !t.Used && subtle.ConstantTimeCompare([]byte(t.Value), valueBytes) == 1 {
+		// A spent or expired token can't be redeemed regardless of the value, and
+		// both checks read only non-secret fields — so skipping them first leaks
+		// nothing. The constant-time compare then keeps a match from leaking, via
+		// timing, how many leading bytes of the secret were guessed correctly.
+		if t.Used || tokenExpired(t.Created, s.TTL, now) {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(t.Value), valueBytes) == 1 {
 			t.Used = true
 			t.UsedBy = usedBy
-			t.UsedAt = time.Now()
+			t.UsedAt = now
 			name := t.ClientName
 			if err := s.saveLocked(f); err != nil {
 				return "", err
@@ -190,6 +213,31 @@ func (s *Store) saveLocked(f fileFormat) error {
 		return fmt.Errorf("invite: replace store: %w", err)
 	}
 	return nil
+}
+
+// tokenExpired reports whether a token created at `created` has passed `ttl` as
+// of `now` (ttl <= 0 means expiry is disabled). The boundary is inclusive:
+// exactly at the TTL counts as expired. A zero `created` — only reachable via a
+// hand-edited store, since Generate always stamps it — is treated as expired:
+// an unknown age isn't trusted.
+func tokenExpired(created time.Time, ttl time.Duration, now time.Time) bool {
+	return ttl > 0 && !created.Add(ttl).After(now)
+}
+
+// pruneExpired drops expired, never-redeemed tokens; used tokens are retained
+// as the audit trail. ttl <= 0 keeps everything. It rewrites in place.
+func pruneExpired(tokens []Token, ttl time.Duration, now time.Time) []Token {
+	if ttl <= 0 {
+		return tokens
+	}
+	kept := tokens[:0]
+	for _, t := range tokens {
+		if !t.Used && tokenExpired(t.Created, ttl, now) {
+			continue // expired and never used → dead weight
+		}
+		kept = append(kept, t)
+	}
+	return kept
 }
 
 // randomToken returns a URL-safe 128-bit random token.
