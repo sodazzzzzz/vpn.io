@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -88,12 +89,35 @@ const (
 	roleKey  = "key"
 )
 
-// maxCredentialFileBytes caps how much PickCredential will read from a chosen
-// file. A real CA/cert/key PEM is a few KiB; the cap stops an accidental pick
-// of a huge file from blocking the UI goroutine and ballooning memory. It also
-// matches the IPC frame budget — the whole profile must fit in one frame
-// (frame.MaxFrameSize, 64 KiB) — so a file over this could never connect anyway.
+// maxCredentialFileBytes caps how much readCappedFile will read from a chosen
+// file. A real CA/cert/key PEM is a few KiB; the cap stops an accidental pick of
+// a huge file from blocking the UI goroutine and ballooning memory. It is a
+// per-file sanity bound only — deliberately not tied to the IPC frame budget
+// (frame.MaxFrameSize, 64 KiB): a profile carries three PEMs base64-encoded in
+// one JSON request, so three files near this cap would overflow a single frame.
+// Real credentials are far smaller, so the frame is never the binding limit.
 const maxCredentialFileBytes = 64 << 10
+
+// readCappedFile reads path but never more than maxCredentialFileBytes. It uses
+// an io.LimitReader rather than Stat-then-ReadFile so a file that grows between
+// the two calls can't slip past the cap (a self-inflicted TOCTOU), reading one
+// byte past the cap so an over-size file is still detected. kind names what the
+// file was expected to be, for the error the user sees.
+func readCappedFile(path, kind string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxCredentialFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if len(data) > maxCredentialFileBytes {
+		return nil, fmt.Errorf("%s is too large for %s — is this the right file?", filepath.Base(path), kind)
+	}
+	return data, nil
+}
 
 // App is the Wails-bound backend. It forwards tunnel control to the privileged
 // daemon over its socket (via control.Client) and holds the credential draft
@@ -211,16 +235,11 @@ func (a *App) PickCredential(role string) (CredInfo, error) {
 		return CredInfo{Role: role, Loaded: false}, nil // cancelled
 	}
 
-	// Bound the read: a credential PEM is tiny, so a large file is almost
-	// certainly the wrong pick — fail early and clearly instead of slurping it.
-	if fi, err := os.Stat(path); err != nil {
-		return CredInfo{}, fmt.Errorf("stat file: %w", err)
-	} else if fi.Size() > maxCredentialFileBytes {
-		return CredInfo{}, fmt.Errorf("%s is too large for a certificate or key — is this the right file?", filepath.Base(path))
-	}
-	data, err := os.ReadFile(path)
+	// A credential PEM is tiny, so a large file is almost certainly the wrong
+	// pick — fail early and clearly instead of slurping it.
+	data, err := readCappedFile(path, "a certificate or key")
 	if err != nil {
-		return CredInfo{}, fmt.Errorf("read file: %w", err)
+		return CredInfo{}, err
 	}
 	// Light check so an obviously-wrong file is caught here; the real
 	// cross-validation (key matches cert, chains to CA, in date) happens in
@@ -266,16 +285,10 @@ func (a *App) ImportProfileBundle() (ProfileInfo, error) {
 		return ProfileInfo{}, nil // cancelled — HasProfile=false signals "no import"
 	}
 
-	// A profile bundle is a few KiB of JSON; the single-credential cap applies
-	// (and the whole profile must fit one IPC frame to connect anyway).
-	if fi, err := os.Stat(path); err != nil {
-		return ProfileInfo{}, fmt.Errorf("stat file: %w", err)
-	} else if fi.Size() > maxCredentialFileBytes {
-		return ProfileInfo{}, fmt.Errorf("%s is too large for a profile — is this the right file?", filepath.Base(path))
-	}
-	data, err := os.ReadFile(path)
+	// A profile bundle is a few KiB of JSON; the single-credential cap applies.
+	data, err := readCappedFile(path, "a profile")
 	if err != nil {
-		return ProfileInfo{}, fmt.Errorf("read file: %w", err)
+		return ProfileInfo{}, err
 	}
 	return a.importBundleData(data, filepath.Base(path))
 }
