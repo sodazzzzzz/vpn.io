@@ -421,6 +421,44 @@ func TestServer_AntiSpoofDropsWrongSrc(t *testing.T) {
 	}
 }
 
+// A valid-src packet larger than the MTU must be dropped at the boundary, not
+// silently swallowed by device.Write (which returns len,nil on oversize) — that
+// looked like a working path but was a black hole (#137).
+func TestServer_DropsOversizePacket(t *testing.T) {
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0")
+	defer h.shutdown()
+
+	cert := h.issueClient("alice")
+	conn, err := h.dial([]tls.Certificate{cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	assigned := net.ParseIP(h.expectAssignIP(conn))
+
+	// Oversize: total frame 1420 > MTU 1380, correct src (passes anti-spoof).
+	oversize := buildIPv4(assigned, net.IPv4(10, 8, 0, 1), make([]byte, 1400))
+	if err := tunnel.WriteData(conn, oversize); err != nil {
+		t.Fatal(err)
+	}
+	// A normal packet right after must reach TUN first — the oversize one never does.
+	valid := buildIPv4(assigned, net.IPv4(10, 8, 0, 1), []byte("ok"))
+	if err := tunnel.WriteData(conn, valid); err != nil {
+		t.Fatal(err)
+	}
+	got := drainOutboxFor(h.tun, 1*time.Second)
+	if got == nil {
+		t.Fatal("valid packet never reached TUN")
+	}
+	if string(got[20:]) != "ok" {
+		t.Fatalf("first packet through was %q; the oversize one slipped through", got[20:])
+	}
+	if extra := drainOutboxFor(h.tun, 200*time.Millisecond); extra != nil {
+		t.Fatalf("oversize packet was not dropped: reached TUN with len=%d", len(extra))
+	}
+}
+
 func TestServer_IsolationDropsInterClient(t *testing.T) {
 	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0")
 	defer h.shutdown()
