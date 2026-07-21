@@ -143,6 +143,7 @@ func cmdServe(args []string) error {
 	storePath := fs.String("store", defaultStore, "invite token store file")
 	installersDir := fs.String("installers", "", "directory with app installers (*.exe/*.pkg/*.deb) to offer after the profile; empty disables")
 	ownerID := fs.Int64("owner", 0, "Telegram user ID allowed to mint tokens with /invite (0 disables; send /whoami to the bot to find yours)")
+	inviteTTL := fs.Duration("invite-ttl", invite.DefaultInviteTTL, "how long an invite token stays redeemable after it's issued (0 = never expires)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -178,6 +179,7 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("connect to Telegram: %w", err)
 	}
 	store := invite.New(*storePath)
+	store.TTL = *inviteTTL
 	// One revoke.Store (with one mutex) shared across handlers, like the invite
 	// store — so its read-modify-write stays serialized even if message handling
 	// is ever moved off the single main goroutine.
