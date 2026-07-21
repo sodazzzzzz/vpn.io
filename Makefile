@@ -13,7 +13,7 @@ CA_HOSTS    ?= localhost,127.0.0.1
 BIN := bin
 GO  := go
 
-.PHONY: help build test vet fmt lint clean \
+.PHONY: help build test vet fmt lint clean clean-ca \
         ca-init ca-server ca-client \
         run-server run-client \
         cross
@@ -25,7 +25,8 @@ help:
 	@echo "  vet             — go vet ./..."
 	@echo "  lint            — golangci-lint run ./... (needs golangci-lint v2)"
 	@echo "  fmt             — gofmt -w ."
-	@echo "  clean           — remove ./$(BIN)/ and CA material"
+	@echo "  clean           — remove ./$(BIN)/ (keeps ca-data/)"
+	@echo "  clean-ca        — remove ./ca-data/ (CA key + all certs; irreversible)"
 	@echo "  cross           — cross-compile for linux/amd64 and windows/amd64"
 	@echo
 	@echo "  ca-init         — make a fresh CA in ./ca-data/"
@@ -62,8 +63,15 @@ lint:
 fmt:
 	gofmt -w .
 
+# clean removes only build output. It must never touch ca-data/: a single
+# habitual `make clean` on the CA host used to destroy the CA private key and
+# every issued cert — an irreversible "revoke-by-loss" of the whole fleet.
 clean:
-	rm -rf $(BIN) ca-data
+	rm -rf $(BIN)
+
+# clean-ca is the explicit, opt-in way to wipe the CA. Not folded into clean.
+clean-ca:
+	rm -rf ca-data
 
 cross:
 	@echo "* linux/amd64"
