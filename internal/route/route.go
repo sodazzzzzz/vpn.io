@@ -114,6 +114,16 @@ func (m *Manager) Install(cidrs []string) error {
 			m.rollback()
 			return fmt.Errorf("route: parse push %q: %w", raw, perr)
 		}
+		// This package is IPv4-only by design (see the Runner docs), and the
+		// per-OS runners assume it — on Windows an IPv6 prefix used to panic
+		// inside a privileged process. Pushed CIDRs come from the server, so
+		// treat them as untrusted input and drop what we can't install rather
+		// than failing the whole connection: a dual-stack server should still
+		// be usable by an IPv4-only client.
+		if !prefix.Addr().Is4() {
+			m.log.Warn("route: ignoring non-IPv4 pushed route", "cidr", raw)
+			continue
+		}
 		for _, p := range expandDefault(prefix) {
 			if err := m.add(p, m.tunGW, m.iface); err != nil {
 				m.rollback()

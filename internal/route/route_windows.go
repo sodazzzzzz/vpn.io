@@ -65,7 +65,10 @@ func (windowsRunner) DefaultGateway() (netip.Addr, error) {
 }
 
 func (windowsRunner) AddRoute(p netip.Prefix, gw netip.Addr, iface string) error {
-	dst, mask := prefixToNetMask(p)
+	dst, mask, err := prefixToNetMask(p)
+	if err != nil {
+		return err
+	}
 	argv := []string{"route", "ADD", dst, "MASK", mask, gw.String()}
 	// Pin the route to iface when one is given. Without "IF <index>", Windows
 	// picks the interface itself from the gateway, and for a tunnel gateway
@@ -83,7 +86,10 @@ func (windowsRunner) AddRoute(p netip.Prefix, gw netip.Addr, iface string) error
 }
 
 func (windowsRunner) DelRoute(p netip.Prefix, gw netip.Addr, _ string) error {
-	dst, _ := prefixToNetMask(p)
+	dst, _, err := prefixToNetMask(p)
+	if err != nil {
+		return err
+	}
 	// Delete matches on destination + gateway, which is unique here, so it
 	// removes the route regardless of the interface it ended up on.
 	return runWin([]string{"route", "DELETE", dst, gw.String()})
@@ -99,7 +105,16 @@ func ifaceIndex(name string) (int, error) {
 	return ifi.Index, nil
 }
 
-func prefixToNetMask(p netip.Prefix) (string, string) {
+// prefixToNetMask renders p as the "dotted-quad destination + dotted-quad
+// netmask" pair that `route ADD/DELETE` expects. It rejects non-IPv4 prefixes:
+// `route` speaks IPv4 here, and As4() panics on an IPv6 address — which, in
+// this privileged process, would take down the whole client on a prefix pushed
+// by the server. Manager.Install already filters these out; this is the
+// backstop at the syscall boundary.
+func prefixToNetMask(p netip.Prefix) (string, string, error) {
+	if !p.Addr().Is4() {
+		return "", "", fmt.Errorf("route: %s is not an IPv4 prefix", p)
+	}
 	addr := p.Addr().As4()
 	bits := p.Bits()
 	var mask [4]byte
@@ -110,7 +125,7 @@ func prefixToNetMask(p netip.Prefix) (string, string) {
 		addr[0] & mask[0], addr[1] & mask[1], addr[2] & mask[2], addr[3] & mask[3],
 	})
 	maskIP := netip.AddrFrom4(mask)
-	return netIP.String(), maskIP.String()
+	return netIP.String(), maskIP.String(), nil
 }
 
 func runWin(argv []string) error {

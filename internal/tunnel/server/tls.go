@@ -14,10 +14,15 @@ import (
 //   - requires clients to present a certificate signed by caCert
 //   - pins TLS 1.3 (no downgrade; matches the locked architecture)
 //   - verifies the client's ExtKeyUsage includes ClientAuth (the standard
-//     verifier already does this; we add an explicit VerifyPeerCertificate
-//     hook for defense-in-depth and to surface clearer errors)
+//     verifier already does this; we add an explicit hook for
+//     defense-in-depth and to surface clearer errors)
 //   - rejects revoked client certificates (deny-list by serial in revokedFile,
 //     hot-reloaded; empty path disables the check)
+//
+// The checks live in VerifyConnection, not VerifyPeerCertificate: the latter
+// is not called on resumed TLS sessions, which would let a client that cached
+// a session ticket before its cert was revoked keep reconnecting past the
+// deny-list for the lifetime of the ticket.
 func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string) (*tls.Config, error) {
 	caPEM, err := os.ReadFile(caCertFile)
 	if err != nil {
@@ -41,15 +46,16 @@ func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string
 		ClientCAs:    caPool,
 		MinVersion:   tls.VersionTLS13,
 		MaxVersion:   tls.VersionTLS13,
-		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			// RequireAndVerifyClientCert populates verifiedChains with at least
-			// one fully verified chain; we just assert the leaf carries
-			// ClientAuth EKU explicitly, in case the CA ever issues a leaf
-			// without it.
-			if len(verifiedChains) == 0 || len(verifiedChains[0]) == 0 {
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			// RequireAndVerifyClientCert populates VerifiedChains with at least
+			// one fully verified chain (on resumed sessions it is restored from
+			// the session state, re-checked against ClientCAs by crypto/tls);
+			// we just assert the leaf carries ClientAuth EKU explicitly, in
+			// case the CA ever issues a leaf without it.
+			if len(cs.VerifiedChains) == 0 || len(cs.VerifiedChains[0]) == 0 {
 				return fmt.Errorf("no verified client chain")
 			}
-			leaf := verifiedChains[0][0]
+			leaf := cs.VerifiedChains[0][0]
 			// Reject revoked clients. Fail closed: a read/parse error on the
 			// deny-list rejects the connection rather than admit a possibly
 			// revoked client.
