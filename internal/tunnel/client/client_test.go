@@ -27,3 +27,24 @@ func TestEnsureConfigured_SameIPIsNoOp(t *testing.T) {
 		t.Fatalf("ensureConfigured with unchanged IP: %v", err)
 	}
 }
+
+// Only a smaller, positive pushed MTU narrows the interface; equal, larger, or
+// absent leaves the device's own MTU (#146). Widening is refused — read buffers
+// are sized for the device's open MTU.
+func TestEffectiveMTU_NarrowsButDoesNotWiden(t *testing.T) {
+	const dev = 1380
+	cases := []struct {
+		pushed, want int
+	}{
+		{0, dev},
+		{1200, 1200},
+		{1380, dev},
+		{1500, dev},
+		{-1, dev},
+	}
+	for _, tc := range cases {
+		if got := effectiveMTU(dev, tc.pushed); got != tc.want {
+			t.Errorf("effectiveMTU(%d, %d) = %d, want %d", dev, tc.pushed, got, tc.want)
+		}
+	}
+}
