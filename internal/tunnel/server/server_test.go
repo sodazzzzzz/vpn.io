@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -659,5 +660,60 @@ func TestServer_PushesRoutesAndDNS(t *testing.T) {
 		if a.DNS[i] != d {
 			t.Fatalf("DNS[%d]: got %q, want %q", i, a.DNS[i], d)
 		}
+	}
+}
+
+// The server must send keepalives on its own schedule. Clients rely on them as
+// proof of life: without a frame arriving regularly, a client cannot tell a
+// wedged server from an idle one and sits at "Connected" on a dead tunnel.
+func TestServer_SendsKeepalives(t *testing.T) {
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.Keepalive = 50 * time.Millisecond })
+	defer h.shutdown()
+
+	conn, err := h.dial([]tls.Certificate{h.issueClient("alice")})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	h.expectAssignIP(conn)
+
+	// Two in a row, so we're seeing a repeating tick rather than a one-off.
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for i := range 2 {
+		typ, body, err := tunnel.ReadPacket(conn)
+		if err != nil {
+			t.Fatalf("keepalive %d: read: %v", i+1, err)
+		}
+		if typ != tunnel.FrameControl {
+			t.Fatalf("keepalive %d: got frame type 0x%02x, want control", i+1, typ)
+		}
+		msg, err := tunnel.DecodeControl(body)
+		if err != nil {
+			t.Fatalf("keepalive %d: decode: %v", i+1, err)
+		}
+		if msg.Type != tunnel.CtrlKeepalive {
+			t.Fatalf("keepalive %d: got control type %v, want keepalive", i+1, msg.Type)
+		}
+	}
+}
+
+// Keepalive is opt-in: with it disabled the server must stay silent on an idle
+// session, so an operator who turned it off doesn't get unexpected traffic.
+func TestServer_NoKeepalivesWhenDisabled(t *testing.T) {
+	h := startServer(t, "10.8.0.0/24", "10.8.0.1", "255.255.255.0",
+		func(c *Config) { c.Keepalive = 0 })
+	defer h.shutdown()
+
+	conn, err := h.dial([]tls.Certificate{h.issueClient("alice")})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	h.expectAssignIP(conn)
+
+	_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, _, err := tunnel.ReadPacket(conn); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("expected silence, got err=%v", err)
 	}
 }
