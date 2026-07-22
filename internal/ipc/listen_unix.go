@@ -21,17 +21,17 @@ import (
 // is created with the given file mode — filesystem permissions are a first
 // gate, and the peer-credential check is the authority on top of it.
 //
-// Кастомный путь сокета обязан лежать в root-only каталоге: каталог должен
-// принадлежать root или текущему пользователю и не быть доступным на запись
-// посторонним. Иначе Listen откажет — см. checkSocketDirSafe.
+// A custom socket path must sit in a directory only its owner can write to: the
+// directory must be owned by root or the current user and not writable by anyone
+// else. Otherwise Listen refuses — see checkSocketDirSafe.
 func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net.Listener, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	// Каталог сокета проверяем до удаления stale-сокета: в каталоге,
-	// доступном на запись постороннему, авто-удаление уязвимо к TOCTOU —
-	// сокет можно подменить между Lstat и Remove. Отказываем явно, а не
-	// молча удаляем непонятно что.
+	// Check the socket directory before removing a stale socket: in a directory
+	// writable by others, the auto-removal is open to TOCTOU — the socket can be
+	// swapped between Lstat and Remove. Refuse explicitly rather than silently
+	// delete whatever is there.
 	if err := checkSocketDirSafe(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
@@ -63,13 +63,13 @@ func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net
 	return &authListener{UnixListener: ul, policy: policy, log: log}, nil
 }
 
-// checkSocketDirSafe убеждается, что каталог сокета нельзя использовать для
-// подмены сокета посторонним пользователем. Безопасным считается каталог,
-// который принадлежит root или текущему пользователю и в который не может
-// писать никто, кроме владельца. Мир-запись без sticky-бита (например,
-// «mkdir -m 0777») открывает окно TOCTOU при авто-удалении stale-сокета и
-// потому отвергается. Дефолтный /var/run (root, 0755) и приватный каталог
-// пользователя (0700) проходят проверку.
+// checkSocketDirSafe ensures the socket directory can't be used by another user
+// to swap in a rogue socket. A directory is safe when it is owned by root or the
+// current user and writable by no one but its owner. A group- or world-writable
+// directory without the sticky bit (e.g. "mkdir -m 0777", or a 0770 dir with an
+// untrusted group) opens a TOCTOU window during the stale-socket auto-removal and
+// is rejected. The default /var/run (root, 0755), a private user directory
+// (0700), and sticky dirs like /tmp all pass.
 func checkSocketDirSafe(dir string) error {
 	fi, err := os.Stat(dir)
 	if err != nil {
@@ -79,13 +79,13 @@ func checkSocketDirSafe(dir string) error {
 	if !ok {
 		return fmt.Errorf("ipc: cannot inspect ownership of socket dir %q", dir)
 	}
-	// Чужой владелец каталога может подменить и сам каталог, и сокет в нём.
+	// A foreign owner could swap both the directory and the socket inside it.
 	if st.Uid != 0 && st.Uid != uint32(os.Geteuid()) {
 		return fmt.Errorf("ipc: socket dir %q is owned by uid %d, expected root or self; use a root-only directory", dir, st.Uid)
 	}
-	// Мир-запись без sticky даёт постороннему право подменить сокет.
-	if fi.Mode().Perm()&0o002 != 0 && fi.Mode()&os.ModeSticky == 0 {
-		return fmt.Errorf("ipc: refusing world-writable socket dir %q; use a root-owned, non-world-writable directory", dir)
+	// Group- or world-write without sticky lets someone else replace the socket.
+	if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("ipc: refusing group/world-writable socket dir %q; use a directory writable only by its owner (or sticky)", dir)
 	}
 	return nil
 }

@@ -93,18 +93,18 @@ func TestListenRejectsUnauthorizedPeer(t *testing.T) {
 	}
 }
 
-// TestListenRefusesWorldWritableDir: если каталог сокета доступен на запись
-// постороннему (мир-запись без sticky), авто-удаление stale-сокета уязвимо к
-// TOCTOU, поэтому Listen обязан отказать, а не создавать сокет молча.
+// TestListenRefusesWorldWritableDir: if the socket directory is writable by
+// others (world-writable without sticky), the stale-socket auto-removal is open
+// to TOCTOU, so Listen must refuse rather than silently create the socket.
 func TestListenRefusesWorldWritableDir(t *testing.T) {
-	// Короткий путь под /tmp: длинный путь t.TempDir() на macOS упирается в
-	// лимит sun_path, из-за чего bind падает раньше проверки прав каталога.
+	// Short path under /tmp: a long t.TempDir() path hits the sun_path limit on
+	// macOS, so bind would fail before the directory-permission check runs.
 	dir, err := os.MkdirTemp("/tmp", "ipc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	// Обходим umask: явно выставляем мир-запись без sticky-бита.
+	// Defeat umask: set world-write without the sticky bit explicitly.
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
@@ -114,10 +114,10 @@ func TestListenRefusesWorldWritableDir(t *testing.T) {
 	}
 }
 
-// TestListenAllowsPrivateDir: приватный каталог пользователя (0700) должен
-// проходить проверку каталога и давать рабочий листенер.
+// TestListenAllowsPrivateDir: a private user directory (0700) must pass the
+// directory check and yield a working listener.
 func TestListenAllowsPrivateDir(t *testing.T) {
-	dir := t.TempDir() // t.TempDir() создаёт каталог с режимом 0700
+	dir := t.TempDir() // t.TempDir() creates the directory with mode 0700
 	sock := filepath.Join(dir, "h.sock")
 	ln, err := Listen(sock, 0600, Policy{}, nil)
 	if err != nil {
@@ -126,12 +126,12 @@ func TestListenAllowsPrivateDir(t *testing.T) {
 	_ = ln.Close()
 }
 
-// TestCheckSocketDirSafe покрывает решения проверки каталога напрямую:
-// приватный и root-only каталоги проходят, sticky-каталог (как /tmp) тоже
-// (kernel не даёт постороннему подменить чужой файл), а мир-запись без
-// sticky отвергается.
+// TestCheckSocketDirSafe covers the directory-check decisions directly: private
+// and root-only directories pass, a sticky directory (like /tmp) passes too (the
+// kernel won't let a stranger replace someone else's file there), while a group-
+// or world-writable directory without sticky is rejected.
 func TestCheckSocketDirSafe(t *testing.T) {
-	private := t.TempDir() // 0700, владелец — мы
+	private := t.TempDir() // 0700, owned by us
 	if err := checkSocketDirSafe(private); err != nil {
 		t.Fatalf("private 0700 dir must be safe: %v", err)
 	}
@@ -158,6 +158,21 @@ func TestCheckSocketDirSafe(t *testing.T) {
 	}
 	if err := checkSocketDirSafe(open); err == nil {
 		t.Fatal("world-writable non-sticky dir must be rejected")
+	}
+
+	// Group-writable without sticky is just as exploitable as world-writable and
+	// must also be rejected (the docstring promises "writable by no one but the
+	// owner").
+	group, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(group)
+	if err := os.Chmod(group, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSocketDirSafe(group); err == nil {
+		t.Fatal("group-writable non-sticky dir must be rejected")
 	}
 }
 
