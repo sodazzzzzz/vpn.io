@@ -35,11 +35,24 @@ func (h *fakeHandler) Connect(r ipc.ConnectRequest) error {
 func (h *fakeHandler) Disconnect() error          { h.disconnectN++; return h.disconnectErr }
 func (h *fakeHandler) Status() ipc.StatusResponse { return h.status }
 
+// shortSocketPath returns a socket path under a short /tmp base. macOS's default
+// t.TempDir() (a long /var/folders/... path) can exceed the ~104-byte sun_path
+// limit, making bind() fail with EINVAL; a short base keeps the test reliable.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "h.sock")
+}
+
 // serve starts an ipc.Server with h on a fresh unix socket admitting the
 // current uid and returns a Client pointed at it. Serve stops at test end.
 func serve(t *testing.T, h ipc.Handler) *Client {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "h.sock")
+	sock := shortSocketPath(t)
 	ln, err := ipc.Listen(sock, 0o600, ipc.Policy{AllowUID: []uint32{uint32(os.Getuid())}}, nil)
 	if err != nil {
 		t.Fatalf("ipc.Listen: %v", err)
