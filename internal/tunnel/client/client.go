@@ -400,10 +400,39 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 	c.emitState(StateConnected)
 
 	// Hand the live conn to runSession; it owns the connection from here
-	// on (and will Close it on its own way out).
+	// on (and will Close it on its own way out). The read-idle deadline is
+	// derived from the server's advertised keepalive (see readIdleTimeout).
 	closeConn = false
-	return c.runSession(ctx, tlsConn, outbound)
+	return c.runSession(ctx, tlsConn, outbound, c.readIdleTimeout(assign))
 }
+
+// readIdleTimeout is how long connReader waits for ANY frame before declaring
+// the connection dead. The pulse that keeps a healthy idle tunnel alive is the
+// SERVER's keepalive, so the timeout is a multiple of the SERVER's interval
+// (advertised in AssignIP) — not the client's own send interval. Otherwise a
+// server pinging slower than 3× the client's interval would trip the deadline on
+// a perfectly healthy connection (#179). Falls back to the client's interval for
+// older servers that don't advertise one, and is 0 (disabled) when neither side
+// runs keepalives.
+func (c *Client) readIdleTimeout(a tunnel.AssignIP) time.Duration {
+	if a.KeepaliveSecs > 0 {
+		// Clamp the server-advertised interval before scaling: an absurd value
+		// (corrupt/hostile/typo'd server config) could otherwise overflow
+		// time.Duration and wrap to a negative or never-firing deadline, silently
+		// disabling the dead-link detection this exists for.
+		secs := min(a.KeepaliveSecs, maxAdvertisedKeepaliveSecs)
+		return 3 * time.Duration(secs) * time.Second
+	}
+	if c.cfg.Keepalive > 0 {
+		return 3 * c.cfg.Keepalive
+	}
+	return 0
+}
+
+// maxAdvertisedKeepaliveSecs caps a server-advertised keepalive interval. An
+// hour is already far beyond any sane keepalive; the cap only exists to keep the
+// 3× read-idle deadline from overflowing on a garbage value.
+const maxAdvertisedKeepaliveSecs = 3600
 
 // ensureRoutes installs the pushed routes on the first successful AssignIP.
 // On subsequent reconnects it's a no-op — we don't try to update the
@@ -678,7 +707,7 @@ func effectiveMTU(deviceMTU, pushed int) int {
 // connection: conn-reader (server → TUN), outbound-pump (TUN → server)
 // and an optional keepalive ticker. It returns when the first one errors
 // or ctx is cancelled.
-func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan []byte) error {
+func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan []byte, readIdle time.Duration) error {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer func() { _ = conn.Close() }()
@@ -691,7 +720,7 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		errCh <- c.connReader(sessionCtx, conn)
+		errCh <- c.connReader(sessionCtx, conn, readIdle)
 	}()
 
 	wg.Add(1)
@@ -744,21 +773,19 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 // Data frames go straight to the TUN device (no anti-spoof needed —
 // these are packets the server is delivering to us). Control frames are
 // inspected; an explicit Error message ends the session as fatal.
-func (c *Client) connReader(ctx context.Context, conn *tls.Conn) error {
+func (c *Client) connReader(ctx context.Context, conn *tls.Conn, idle time.Duration) error {
 	// Read-idle detection. A server whose process has wedged while its kernel
 	// keeps the TCP session open sends nothing, and without a deadline this
 	// Read parks forever: the session never ends, the reconnect loop never
 	// runs, and the user keeps seeing "Connected" on a tunnel carrying nothing.
 	//
-	// The deadline is armed only after the first server-sent keepalive, which
-	// is what makes it safe to ship against an already-deployed server: older
-	// servers never send them, so the deadline is never armed and those
-	// connections behave exactly as before. Once a server has proved it sends
-	// keepalives, silence for several intervals means the path is dead.
-	var idle time.Duration
-	if c.cfg.Keepalive > 0 {
-		idle = 3 * c.cfg.Keepalive
-	}
+	// idle is derived from the server's advertised keepalive (see
+	// readIdleTimeout); 0 disables the check. The deadline is armed only after
+	// the first server-sent keepalive, which is what makes it safe to ship
+	// against an already-deployed server: older servers never send them, so the
+	// deadline is never armed and those connections behave exactly as before.
+	// Once a server has proved it sends keepalives, silence for several intervals
+	// means the path is dead.
 	armed := false
 
 	for {
