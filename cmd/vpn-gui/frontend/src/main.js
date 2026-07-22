@@ -1,14 +1,14 @@
 import './style.css';
 import { Status, Disconnect, PickCredential, Connect, Reconnect, Profile, ImportProfileBundle } from '../wailsjs/go/main/App';
-import { WindowSetSize, WindowGetSize } from '../wailsjs/runtime/runtime';
+import { WindowSetSize, WindowGetSize, EventsOn } from '../wailsjs/runtime/runtime';
 
 // Two screens in one popover: the main status view and the credential-import
-// sheet. The main view mirrors the daemon (poll Status() every ~1.5s and render
-// from it). Credentials are picked file-by-file via Go (PickCredential opens a
-// native dialog and keeps the PEM bytes in the backend); the sheet only sends
-// the non-secret form (server + options) on Save.
-
-const POLL_MS = 1500;
+// sheet. The main view mirrors the daemon, but it does NOT poll on its own — the
+// Go-side tray watcher is the single state source and pushes a "daemon-changed"
+// event that triggers a refresh here, so the window and the tray icon move
+// together (#154). Credentials are picked file-by-file via Go (PickCredential
+// opens a native dialog and keeps the PEM bytes in the backend); the sheet only
+// sends the non-secret form (server + options) on Save.
 
 const LABELS = {
   disconnected: 'Not connected',
@@ -462,6 +462,11 @@ if (navigator.userAgent.includes('Windows')) {
 
 setupTheme();
 wireImport();
-poll();
-setInterval(poll, POLL_MS);
+poll(); // initial state + profile; subsequent refreshes come from the tray watcher
+
+// The Go tray watcher drives refreshes (single source of truth, #154): it emits
+// "daemon-changed" on every state tick, and "open-settings" when the tray's
+// Settings item is chosen.
+EventsOn('daemon-changed', poll);
+EventsOn('open-settings', openImport);
 setInterval(updateTimer, 1000);
