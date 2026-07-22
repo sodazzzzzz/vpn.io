@@ -13,6 +13,7 @@ const dialTimeout = 5 * time.Second
 // server side. The transport is the platform's local IPC: a unix-domain socket
 // on linux/darwin, a named pipe on windows.
 func Do(path string, req Request) (Response, error) {
+	req.Version = IPCVersion // stamp our protocol version so the daemon can detect skew
 	conn, err := dialControl(path)
 	if err != nil {
 		return Response{}, err

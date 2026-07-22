@@ -4,6 +4,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/govpn/internal/tunnel"
 )
 
 // sessionWriteBufferDepth is how many outbound packets a session may queue
@@ -25,6 +27,10 @@ type Session struct {
 	Remote   net.Addr  // client's real source address, for audit logging
 	Start    time.Time // set at connect (handleConn) — basis for session duration
 	outbound chan []byte
+	// reject hands the writer a final control message (e.g. an outdated-client
+	// Error) to send before closing, so the sole-writer invariant holds — the
+	// reader must not write to Conn itself. Buffered (cap 1); used at most once.
+	reject   chan tunnel.ControlMessage
 	closeCh  chan struct{}
 	doneCh   chan struct{} // closed when the session's handler has fully torn down
 	closeOne sync.Once
@@ -39,6 +45,7 @@ func newSession(cn string, ip net.IP, conn net.Conn) *Session {
 		// Start is set at connect in handleConn (after AssignIP is sent), so
 		// session duration reflects tunnel uptime, not admission overhead.
 		outbound: make(chan []byte, sessionWriteBufferDepth),
+		reject:   make(chan tunnel.ControlMessage, 1),
 		closeCh:  make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}

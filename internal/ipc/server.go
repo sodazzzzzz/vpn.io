@@ -143,6 +143,12 @@ func (s *Server) handle(conn net.Conn) {
 }
 
 func (s *Server) dispatch(req Request) Response {
+	// A front-end newer than this daemon may use envelope/command semantics we
+	// don't understand; refuse with a clear message rather than mishandle it
+	// (#143). A legacy front-end (Version 0) is accepted.
+	if req.Version > IPCVersion {
+		return errResponse(fmt.Errorf("the vpn.io helper (IPC v%d) is older than the app (v%d); update or restart the helper", IPCVersion, req.Version))
+	}
 	switch req.Command {
 	case CmdConnect:
 		var cr ConnectRequest

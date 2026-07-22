@@ -27,6 +27,28 @@ const (
 	FrameData    FrameType = 0x02
 )
 
+// ProtocolVersion is the wire-protocol version this build speaks. Bump it ONLY
+// for a breaking change; additive changes — new omitempty fields, new control
+// types (both sides ignore ones they don't recognize) — keep the same version.
+//
+// MinPeerVersion is the oldest peer version this build still interoperates with.
+// Raise it in lockstep with a breaking ProtocolVersion bump so the newer side
+// can reject a peer too old to understand the change with a clear message,
+// instead of failing opaquely mid-session (#143). Peers that predate versioning
+// advertise 0 and are treated as legacy — accepted, since they can't be told
+// apart from a silent-old client anyway.
+const (
+	ProtocolVersion = 1
+	MinPeerVersion  = 1
+)
+
+// PeerCompatible reports whether a peer advertising peerVersion is one we can
+// talk to. 0 means "pre-versioning" (legacy) and is accepted; anything else must
+// be at least MinPeerVersion.
+func PeerCompatible(peerVersion int) bool {
+	return peerVersion == 0 || peerVersion >= MinPeerVersion
+}
+
 // ControlType identifies a control message inside a Control frame.
 type ControlType string
 
@@ -34,6 +56,11 @@ const (
 	CtrlAssignIP  ControlType = "assign_ip"
 	CtrlKeepalive ControlType = "keepalive"
 	CtrlError     ControlType = "error"
+	// CtrlHello is the client's first control frame, announcing its
+	// ProtocolVersion so the server can reject a client too old for a breaking
+	// change. Older clients don't send it; the server reads a missing Hello as
+	// the legacy version.
+	CtrlHello ControlType = "hello"
 )
 
 // ControlMessage is the JSON envelope for every control frame.
@@ -60,6 +87,11 @@ type AssignIP struct {
 	MTU     int      `json:"mtu"`              // e.g. 1380
 	Routes  []string `json:"routes,omitempty"` // CIDRs, e.g. ["0.0.0.0/0"]
 	DNS     []string `json:"dns,omitempty"`    // resolver IPs, e.g. ["1.1.1.1"]
+
+	// ProtoVersion is the server's ProtocolVersion, so the client can spot a
+	// server too old for it and fail with a clear message rather than mid-session
+	// (#143). Omitted (0) by pre-versioning servers.
+	ProtoVersion int `json:"proto,omitempty"`
 }
 
 // ErrorMsg is sent server→client (or vice versa) to report a fatal protocol
@@ -141,6 +173,32 @@ func NewAssignIP(a AssignIP) (ControlMessage, error) {
 // NewKeepalive builds an empty keepalive control message.
 func NewKeepalive() ControlMessage {
 	return ControlMessage{Type: CtrlKeepalive}
+}
+
+// Hello is the payload for CtrlHello: the client's advertised ProtocolVersion.
+type Hello struct {
+	Version int `json:"version"`
+}
+
+// NewHello builds a hello control message carrying version.
+func NewHello(version int) (ControlMessage, error) {
+	raw, err := json.Marshal(Hello{Version: version})
+	if err != nil {
+		return ControlMessage{}, fmt.Errorf("tunnel: marshal hello: %w", err)
+	}
+	return ControlMessage{Type: CtrlHello, Payload: raw}, nil
+}
+
+// ParseHello decodes a CtrlHello control message's payload.
+func ParseHello(msg ControlMessage) (Hello, error) {
+	if msg.Type != CtrlHello {
+		return Hello{}, fmt.Errorf("tunnel: not a hello message (type %q)", msg.Type)
+	}
+	var h Hello
+	if err := json.Unmarshal(msg.Payload, &h); err != nil {
+		return Hello{}, fmt.Errorf("tunnel: unmarshal hello: %w", err)
+	}
+	return h, nil
 }
 
 // NewError builds an error control message.
