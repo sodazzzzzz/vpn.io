@@ -130,6 +130,16 @@ func (s *Server) handle(conn net.Conn) {
 
 	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
 
+	// Gate the connection by the caller's identity before reading its command.
+	// On unix the listener already did this via peer credentials, so this is a
+	// no-op there; on Windows it's the real check that the caller is the console
+	// user, since the pipe SDDL alone can't express that (#178).
+	if err := authorizePeer(conn); err != nil {
+		s.log.Warn("ipc: rejected unauthorized control client", "err", err)
+		_ = WriteResponse(conn, errResponse(errors.New("not authorized to control the tunnel")))
+		return
+	}
+
 	req, err := ReadRequest(conn)
 	if err != nil {
 		s.log.Debug("ipc: read request", "err", err)
