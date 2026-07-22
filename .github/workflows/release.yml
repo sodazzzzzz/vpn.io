@@ -201,6 +201,27 @@ jobs:
           chmod +x rel/vpn-server rel/vpn-bot rel/vpn-ca
           ( cd rel && sha256sum * > SHA256SUMS )
           ls -lh rel
+      - name: sign checksums (minisign)
+        # SHA256SUMS travels the same channel as the binaries, so signing it with
+        # a key held only here (not on any release asset) is the independent trust
+        # anchor vpn-update.sh pins against (#123). Fail closed: no signing secret
+        # => no release, rather than an unverifiable one.
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "MINISIGN_SECRET_KEY secret is not set — cannot sign the release" >&2
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          key="$RUNNER_TEMP/minisign.key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          # minisign reads the key password from stdin when stdin isn't a tty.
+          printf '%s' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m rel/SHA256SUMS -x rel/SHA256SUMS.minisig
+          rm -f "$key"
+          test -s rel/SHA256SUMS.minisig || { echo "signing produced no signature" >&2; exit 1; }
+          ls -lh rel
       - name: create release
         env:
           GH_TOKEN: ${{ github.token }}
