@@ -104,10 +104,13 @@ Section
     File "..\vpn-helper.exe"
     File "..\wintun.dll"
     DetailPrint "Registering the vpn.io background service..."
-    nsExec::ExecToLog '"$INSTDIR\vpn-helper.exe" -install'
-    Pop $0
+    # ExecToStack (not ExecToLog) so the helper's own stderr — the real reason a
+    # -install failed — reaches the dialog instead of a bare "exit code 1".
+    nsExec::ExecToStack '"$INSTDIR\vpn-helper.exe" -install'
+    Pop $0 # exit code
+    Pop $1 # captured stdout+stderr
     ${If} $0 != 0
-        MessageBox MB_OK|MB_ICONSTOP "Could not register the vpn.io background service (exit code $0). Installation cannot continue."
+        MessageBox MB_OK|MB_ICONSTOP "Could not register the vpn.io background service (exit code $0).$\n$\n$1$\nInstallation cannot continue."
         Abort
     ${EndIf}
     DetailPrint "Starting the vpn.io background service..."
