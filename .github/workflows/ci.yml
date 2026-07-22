@@ -46,15 +46,35 @@ jobs:
         target:
           - { goos: linux, goarch: amd64 }
           - { goos: windows, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 } # build-only: compiles the *_darwin.go files
+          - { goos: darwin, goarch: arm64 } # только сборка: компилирует файлы *_darwin.go
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      # Собираем все не-GUI бинарники под каждую целевую ОС, чтобы рефактор
+      # go.mod/scripts не сломал darwin/windows-хелпер незаметно до релиза.
+      # vpn-gui — отдельный модуль с CGO/Wails, его нативная сборка живёт в desktop-воркфлоу.
       - name: build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
         env:
           GOOS: ${{ matrix.target.goos }}
           GOARCH: ${{ matrix.target.goarch }}
-        run: go build ./cmd/vpn-ca ./cmd/vpn-server ./cmd/vpn-client
+        run: >-
+          go build
+          ./cmd/vpn-ca
+          ./cmd/vpn-server
+          ./cmd/vpn-client
+          ./cmd/vpn-helper
+          ./cmd/vpn-bot
+          ./cmd/vpn-ctl
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # shellcheck предустановлен на образе ubuntu-latest — отдельный action не нужен.
+      # Покрываем root-логику установщиков в packaging/ и скрипты в scripts/.
+      - name: shellcheck
+        run: find packaging scripts -name '*.sh' -print0 | xargs -0 -r shellcheck
