@@ -18,17 +18,16 @@ import (
 //   - read/write to the interactive user (IU), so the GUI running as the
 //     logged-in user can connect.
 //
-// LIMITATION: IU (NT AUTHORITY\INTERACTIVE) covers EVERY interactive logon
-// session, so on a multi-user host (e.g. a Windows Server with several RDP
-// users) any logged-in user could connect and drive the tunnel — tearing down
-// or hijacking another user's session. It cannot leak the private key (that
-// only ever travels client→server), so it is a weaker problem than the squat
-// it sits next to, and it is acceptable on the single-user personal machines
-// this targets. Narrowing it to one user SID needs a way to learn which user
-// that is, which the helper — started at boot as a service, before anyone logs
-// in — does not have today; it is tracked separately.
+// IU (NT AUTHORITY\INTERACTIVE) covers EVERY interactive logon session, because
+// the descriptor is fixed at service start — before anyone logs in — so it can't
+// name the eventual user. That only grants the right to OPEN the pipe: which
+// interactive user may actually drive the tunnel is enforced per-connection by
+// authorizePeer (authz_windows.go), which admits only the active console-session
+// user (plus LocalSystem). So on a multi-user / RDP host a second logged-in user
+// can reach the pipe but not command it (#178).
 //
-// The unix Policy (uid/gid) does not apply on Windows; this ACL is the gate.
+// The unix Policy (uid/gid) does not apply on Windows; this ACL plus
+// authorizePeer are the gate.
 const pipeSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
 
 // Listen creates the named-pipe control endpoint at path (e.g.
