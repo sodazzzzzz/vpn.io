@@ -6,9 +6,11 @@ package main
 #cgo CFLAGS: -x objective-c
 #cgo LDFLAGS: -framework Cocoa
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 #include <stdint.h>
 
 extern void trayMainThreadCallback(void *ctx);
+extern void dockReopenCallback(void);
 
 // owner is energye/systray's status-item delegate (file-scope symbol, external
 // linkage). We reach its private statusItem via KVC to toggle the menu-bar
@@ -46,6 +48,32 @@ static void highlightMainCallback(void *ctx) {
 static void dispatchHighlightToMain(bool on) {
     dispatch_async_f(dispatch_get_main_queue(), (void *)(intptr_t)(on ? 1 : 0), highlightMainCallback);
 }
+
+// vpnHandleReopen implements applicationShouldHandleReopen:hasVisibleWindows:,
+// which Cocoa sends when the user clicks the app's Dock icon while it is already
+// running. It hands off to Go to reopen the window and returns YES.
+static BOOL vpnHandleReopen(id self, SEL _cmd, id app, BOOL hasVisibleWindows) {
+    dockReopenCallback();
+    return YES;
+}
+
+// installDockReopenNow adds applicationShouldHandleReopen:hasVisibleWindows: to
+// the class of `owner` — systray's app delegate. systray took over the delegate
+// (that is what makes the Dock click land nowhere by default), so the handler
+// has to be grafted onto its class. class_replaceMethod adds it if absent or
+// overrides it if present. "c@:@c" is the type encoding: BOOL(id, SEL, id, BOOL).
+static void installDockReopenNow(void *unused) {
+    if (owner == nil) { return; }
+    class_replaceMethod(object_getClass(owner),
+        @selector(applicationShouldHandleReopen:hasVisibleWindows:),
+        (IMP)vpnHandleReopen, "c@:@c");
+}
+
+// installDockReopenMain grafts the handler on the main thread — the delegate and
+// the AppKit runtime it belongs to are main-thread affine.
+static void installDockReopenMain(void) {
+    dispatch_async_f(dispatch_get_main_queue(), NULL, installDockReopenNow);
+}
 */
 import "C"
 
@@ -53,6 +81,24 @@ import (
 	"runtime/cgo"
 	"unsafe"
 )
+
+// dockReopen is invoked when the Dock icon is clicked (set by installDockReopen,
+// read from the Cocoa main thread in dockReopenCallback — both on the main
+// thread, so no synchronization is needed).
+var dockReopen func()
+
+//export dockReopenCallback
+func dockReopenCallback() {
+	if dockReopen != nil {
+		dockReopen()
+	}
+}
+
+// installDockReopen wires a Dock-icon click to show, invoking the given func.
+func installDockReopen(show func()) {
+	dockReopen = show
+	C.installDockReopenMain()
+}
 
 //export trayMainThreadCallback
 func trayMainThreadCallback(ctx unsafe.Pointer) {
