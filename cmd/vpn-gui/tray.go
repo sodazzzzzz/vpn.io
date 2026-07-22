@@ -54,16 +54,15 @@ type tray struct {
 	// main thread while a tray callback is still on the way out.
 	quitting atomic.Bool
 
-	mu         sync.Mutex
-	winVisible bool   // best-effort track of the window's visibility
-	state      string // last state applied to the icon, to skip no-op updates
+	mu    sync.Mutex
+	state string // last state applied to the icon, to skip no-op updates
 
 	mStatus     *systray.MenuItem
 	mConnect    *systray.MenuItem
 	mDisconnect *systray.MenuItem
 }
 
-func newTray(a *App) *tray { return &tray{app: a, winVisible: true} }
+func newTray(a *App) *tray { return &tray{app: a} }
 
 // start hooks the systray into the host (Wails) run loop. RunWithExternalLoop
 // registers the callbacks and returns a start func that actually creates the
@@ -236,20 +235,17 @@ func cancelClose(quitting, quitOnWindowClose bool) bool {
 	return !quitting && !quitOnWindowClose
 }
 
-// setWindow shows or hides the window, keeping the tracked visibility and the
-// tray icon's highlighted (selected) look in sync — the icon stays highlighted
-// while the window is open, as click feedback.
+// setWindow shows or hides the window and keeps the tray icon's highlighted
+// (selected) look in sync — the icon stays highlighted while the window is open,
+// as click feedback.
 func (t *tray) setWindow(show bool) {
 	if show {
 		wruntime.WindowShow(t.app.ctx)
 	} else {
 		wruntime.WindowHide(t.app.ctx)
 	}
-	t.setVisible(show)
 	setTrayHighlighted(show)
 }
-
-func (t *tray) setVisible(v bool) { t.mu.Lock(); t.winVisible = v; t.mu.Unlock() }
 
 func setEnabled(item *systray.MenuItem, enabled bool) {
 	if enabled {
