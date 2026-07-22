@@ -84,9 +84,6 @@ func (d *darwinRunner) Restore() error {
 	if d.saved == nil {
 		return nil
 	}
-	// A clean Restore makes the durable marker obsolete — drop it so a later
-	// helper start doesn't "recover" DNS we've already put back.
-	defer func() { _ = removeDNSBackup() }()
 	var firstErr error
 	for svc, orig := range d.saved {
 		var args []string
@@ -101,6 +98,13 @@ func (d *darwinRunner) Restore() error {
 		}
 	}
 	d.saved = nil
+	// Drop the durable marker only on a fully clean restore. If a service failed
+	// to revert, keep it so the next helper start (Reconcile) can finish the job —
+	// dropping it would strand that service on the dead tunnel resolver forever,
+	// the exact "no terminal after install" failure this marker guards against.
+	if firstErr == nil {
+		_ = removeDNSBackup()
+	}
 	return firstErr
 }
 
@@ -230,7 +234,14 @@ func writeDNSBackup(b darwinBackup) error {
 	if err := os.MkdirAll(filepath.Dir(dnsBackupPath), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(dnsBackupPath, data, 0o600)
+	// Write atomically (temp + rename), as dns_linux.go does for its durable
+	// backup: a crash mid-write must not leave a truncated marker, which would
+	// make readDNSBackup fail to parse and wedge Reconcile on every later start.
+	tmp := dnsBackupPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dnsBackupPath)
 }
 
 // readDNSBackup loads the durable snapshot. ok is false (with a nil error) when

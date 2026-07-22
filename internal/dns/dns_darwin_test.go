@@ -3,6 +3,7 @@
 package dns
 
 import (
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -125,5 +126,33 @@ func TestRestore_DropsDurableMarker(t *testing.T) {
 	}
 	if _, ok, _ := readDNSBackup(); ok {
 		t.Fatal("clean Restore should remove the durable marker")
+	}
+}
+
+// A PARTIAL Restore failure must KEEP the durable marker, so the next helper
+// start (Reconcile) can finish reverting the stranded service. Dropping it would
+// leave that service on the dead tunnel resolver forever — the "no terminal
+// after install" failure this marker exists to prevent.
+func TestRestore_KeepsMarkerOnPartialFailure(t *testing.T) {
+	withTempDNSBackup(t)
+	orig := setDNSServers
+	setDNSServers = func(svc string, _ []string) error {
+		if svc == "Ethernet" {
+			return errors.New("networksetup failed")
+		}
+		return nil
+	}
+	t.Cleanup(func() { setDNSServers = orig })
+
+	services := map[string][]string{"Wi-Fi": {"192.168.1.1"}, "Ethernet": {"192.168.1.1"}}
+	if err := writeDNSBackup(darwinBackup{Services: services}); err != nil {
+		t.Fatalf("writeDNSBackup: %v", err)
+	}
+	r := &darwinRunner{saved: services}
+	if err := r.Restore(); err == nil {
+		t.Fatal("Restore should surface the Ethernet failure")
+	}
+	if _, ok, _ := readDNSBackup(); !ok {
+		t.Fatal("a partial Restore failure must keep the durable marker for Reconcile")
 	}
 }
