@@ -67,6 +67,7 @@ func TestReadIdleTimeout_FollowsServerKeepalive(t *testing.T) {
 		{"fast client interval is ignored", 100 * time.Millisecond, 30, 90 * sec},
 		{"old server (no advert) → client fallback", 5 * sec, 0, 15 * sec},
 		{"neither runs keepalives → disabled", 0, 0, 0},
+		{"absurd server value is clamped, not overflowed", 1 * sec, 1 << 40, 3 * maxAdvertisedKeepaliveSecs * sec},
 	}
 	for _, tc := range cases {
 		c := &Client{cfg: Config{Keepalive: tc.clientKA}}

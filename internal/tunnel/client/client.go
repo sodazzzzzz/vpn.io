@@ -416,13 +416,23 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 // runs keepalives.
 func (c *Client) readIdleTimeout(a tunnel.AssignIP) time.Duration {
 	if a.KeepaliveSecs > 0 {
-		return 3 * time.Duration(a.KeepaliveSecs) * time.Second
+		// Clamp the server-advertised interval before scaling: an absurd value
+		// (corrupt/hostile/typo'd server config) could otherwise overflow
+		// time.Duration and wrap to a negative or never-firing deadline, silently
+		// disabling the dead-link detection this exists for.
+		secs := min(a.KeepaliveSecs, maxAdvertisedKeepaliveSecs)
+		return 3 * time.Duration(secs) * time.Second
 	}
 	if c.cfg.Keepalive > 0 {
 		return 3 * c.cfg.Keepalive
 	}
 	return 0
 }
+
+// maxAdvertisedKeepaliveSecs caps a server-advertised keepalive interval. An
+// hour is already far beyond any sane keepalive; the cap only exists to keep the
+// 3× read-idle deadline from overflowing on a garbage value.
+const maxAdvertisedKeepaliveSecs = 3600
 
 // ensureRoutes installs the pushed routes on the first successful AssignIP.
 // On subsequent reconnects it's a no-op — we don't try to update the
