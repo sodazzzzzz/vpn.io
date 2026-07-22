@@ -28,7 +28,7 @@ INSTALLERS="/etc/vpn-bot/installers"
 # secret key OFF the VPS (it lives only as the MINISIGN_SECRET_KEY release
 # secret), and paste the SECOND line of the .pub file (starts with "RW") below:
 #     minisign -G -p vpn-io.pub -s vpn-io.key
-MINISIGN_PUBKEY="RWQPLACEHOLDER_PASTE_THE_PINNED_MINISIGN_PUBLIC_KEY_LINE_HERE"
+MINISIGN_PUBKEY="RWTgDmnwVFmjgUVlyCF0Hz+ATSdQdswF/ac6tj/bgbE0SbsDLGEzWEH0"
 
 do_server=0
 assume_yes=0
