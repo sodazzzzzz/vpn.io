@@ -216,10 +216,12 @@ jobs:
           fi
           sudo apt-get update -qq && sudo apt-get install -y -qq minisign
           key="$RUNNER_TEMP/minisign.key"
+          # Remove the plaintext key on ANY exit — a signing failure under set -e
+          # would otherwise leave it in $RUNNER_TEMP (mirrors vpn-update.sh's trap).
+          trap 'rm -f "$key"' EXIT
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
           # minisign reads the key password from stdin when stdin isn't a tty.
           printf '%s' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m rel/SHA256SUMS -x rel/SHA256SUMS.minisig
-          rm -f "$key"
           test -s rel/SHA256SUMS.minisig || { echo "signing produced no signature" >&2; exit 1; }
           ls -lh rel
       - name: create release
