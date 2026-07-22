@@ -347,15 +347,25 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		close(sess.doneCh)
 	}()
 
+	// Advertise the keepalive interval rounded UP to whole seconds: a sub-second
+	// interval (e.g. -keepalive=500ms) must still report >=1, or truncation to 0
+	// makes the client read it as "no advertisement" and the dead-link detection
+	// silently disables — the very thing #179 fixes. 0 stays 0 (keepalive off).
+	kaSecs := 0
+	if s.cfg.Keepalive > 0 {
+		kaSecs = int((s.cfg.Keepalive + time.Second - 1) / time.Second)
+	}
+
 	// Send the AssignIP control message before any data flows.
 	assign, err := tunnel.NewAssignIP(tunnel.AssignIP{
-		IP:           ip.String(),
-		Gateway:      s.cfg.Gateway,
-		Netmask:      s.cfg.Netmask,
-		MTU:          s.cfg.MTU,
-		Routes:       s.cfg.PushRoutes,
-		DNS:          s.cfg.PushDNS,
-		ProtoVersion: tunnel.ProtocolVersion,
+		IP:            ip.String(),
+		Gateway:       s.cfg.Gateway,
+		Netmask:       s.cfg.Netmask,
+		MTU:           s.cfg.MTU,
+		Routes:        s.cfg.PushRoutes,
+		DNS:           s.cfg.PushDNS,
+		ProtoVersion:  tunnel.ProtocolVersion,
+		KeepaliveSecs: kaSecs,
 	})
 	if err != nil {
 		s.log.Error("build assign_ip", "err", err)

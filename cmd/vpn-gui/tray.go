@@ -34,15 +34,17 @@ var iconFailed []byte
 //go:embed build/appicon.png
 var appIcon []byte
 
-// trayPollInterval is how often the tray re-reads the daemon state. The window
-// polls on its own; this keeps the menu-bar icon honest even while the window
-// is hidden.
-const trayPollInterval = 2 * time.Second
+// trayPollInterval is how often the tray re-reads the daemon state. This is the
+// single state watcher for the whole app: it updates the menu-bar icon AND emits
+// a "daemon-changed" event so the window refreshes in lockstep, instead of the
+// window running its own competing poll (which drifted up to ~2s out of sync,
+// #154).
+const trayPollInterval = 1 * time.Second
 
 // tray is the menu-bar presence: a status icon that mirrors the tunnel state
-// plus a small menu (Connect / Disconnect / Show Window / Quit). Left-click
-// toggles the window; right-click opens the menu. It drives the window and the
-// daemon through the App it points back to.
+// plus a menu (Connect / Disconnect / Open / Settings / Quit). Clicking the icon
+// opens the menu (OpenVPN-style); the window is reached through the menu. It
+// drives the window and the daemon through the App it points back to.
 type tray struct {
 	app *App
 
@@ -52,16 +54,15 @@ type tray struct {
 	// main thread while a tray callback is still on the way out.
 	quitting atomic.Bool
 
-	mu         sync.Mutex
-	winVisible bool   // best-effort track of the window's visibility
-	state      string // last state applied to the icon, to skip no-op updates
+	mu    sync.Mutex
+	state string // last state applied to the icon, to skip no-op updates
 
 	mStatus     *systray.MenuItem
 	mConnect    *systray.MenuItem
 	mDisconnect *systray.MenuItem
 }
 
-func newTray(a *App) *tray { return &tray{app: a, winVisible: true} }
+func newTray(a *App) *tray { return &tray{app: a} }
 
 // start hooks the systray into the host (Wails) run loop. RunWithExternalLoop
 // registers the callbacks and returns a start func that actually creates the
@@ -83,7 +84,8 @@ func (t *tray) onReady() {
 	t.mConnect = systray.AddMenuItem("Connect", "Bring the tunnel up")
 	t.mDisconnect = systray.AddMenuItem("Disconnect", "Take the tunnel down")
 	systray.AddSeparator()
-	mShow := systray.AddMenuItem("Show Window", "")
+	mOpen := systray.AddMenuItem("Open vpn.io…", "Show the main window")
+	mSettings := systray.AddMenuItem("Settings…", "Open the profile & settings screen")
 	mQuit := systray.AddMenuItem("Quit vpn.io", "")
 
 	t.mConnect.Click(func() {
@@ -106,11 +108,20 @@ func (t *tray) onReady() {
 			}
 		}()
 	})
-	mShow.Click(t.showWindow)
+	mOpen.Click(t.showWindow)
+	mSettings.Click(t.showSettings)
 	mQuit.Click(func() { t.requestQuit() })
 
-	systray.SetOnClick(func(systray.IMenu) { t.toggleWindow() })
-	systray.SetOnRClick(func(menu systray.IMenu) { _ = menu.ShowMenu() })
+	// Clicking the tray icon opens the menu (both buttons), OpenVPN-style; the
+	// window is reached through "Open vpn.io…"/"Settings…". This also sidesteps
+	// the stale-winVisible desync of the old toggle-on-click (#154).
+	showMenu := func(menu systray.IMenu) { _ = menu.ShowMenu() }
+	systray.SetOnClick(showMenu)
+	systray.SetOnRClick(showMenu)
+
+	// The app lives in the Dock; let a Dock-icon click reopen the window even
+	// though systray owns the NSApplication delegate (#154).
+	installDockReopen(t.showWindow)
 
 	setTrayHighlighted(true) // window starts visible
 	go t.refreshLoop()
@@ -151,11 +162,25 @@ func (t *tray) refresh() {
 	active := state == "connecting" || state == "connected" || state == "reconnecting"
 	setEnabled(t.mDisconnect, active)
 	setEnabled(t.mConnect, !active && t.app.Profile().HasProfile)
+
+	// Drive the window from this same watcher: nudge the frontend to re-read the
+	// daemon so its view and the tray icon move together (#154). Cheap, and the
+	// frontend coalesces overlapping refreshes.
+	if t.app.ctx != nil {
+		wruntime.EventsEmit(t.app.ctx, "daemon-changed")
+	}
 }
 
 func (t *tray) showWindow() { t.setWindow(true) }
 
-func (t *tray) toggleWindow() { t.setWindow(!t.visible()) }
+// showSettings opens the window and asks the frontend to jump straight to the
+// profile & settings screen.
+func (t *tray) showSettings() {
+	t.showWindow()
+	if t.app.ctx != nil {
+		wruntime.EventsEmit(t.app.ctx, "open-settings")
+	}
+}
 
 // requestQuit starts a graceful shutdown. Used by the tray's "Quit" item — on
 // macOS the only way out, since the window's close button just hides.
@@ -210,21 +235,17 @@ func cancelClose(quitting, quitOnWindowClose bool) bool {
 	return !quitting && !quitOnWindowClose
 }
 
-// setWindow shows or hides the window, keeping the tracked visibility and the
-// tray icon's highlighted (selected) look in sync — the icon stays highlighted
-// while the window is open, as click feedback.
+// setWindow shows or hides the window and keeps the tray icon's highlighted
+// (selected) look in sync — the icon stays highlighted while the window is open,
+// as click feedback.
 func (t *tray) setWindow(show bool) {
 	if show {
 		wruntime.WindowShow(t.app.ctx)
 	} else {
 		wruntime.WindowHide(t.app.ctx)
 	}
-	t.setVisible(show)
 	setTrayHighlighted(show)
 }
-
-func (t *tray) visible() bool     { t.mu.Lock(); defer t.mu.Unlock(); return t.winVisible }
-func (t *tray) setVisible(v bool) { t.mu.Lock(); t.winVisible = v; t.mu.Unlock() }
 
 func setEnabled(item *systray.MenuItem, enabled bool) {
 	if enabled {

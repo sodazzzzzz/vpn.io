@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/govpn/internal/tunnel"
 )
@@ -46,6 +47,33 @@ func TestEffectiveMTU_NarrowsButDoesNotWiden(t *testing.T) {
 	for _, tc := range cases {
 		if got := effectiveMTU(dev, tc.pushed); got != tc.want {
 			t.Errorf("effectiveMTU(%d, %d) = %d, want %d", dev, tc.pushed, got, tc.want)
+		}
+	}
+}
+
+// The read-idle deadline follows the SERVER's advertised keepalive, not the
+// client's own send interval — so a slow server pulse can't trip the deadline on
+// a healthy connection (#179). It falls back to the client interval only when
+// the server advertises none (older server), and disables when neither has one.
+func TestReadIdleTimeout_FollowsServerKeepalive(t *testing.T) {
+	const sec = time.Second
+	cases := []struct {
+		name         string
+		clientKA     time.Duration
+		serverKASecs int
+		want         time.Duration
+	}{
+		{"server pulse drives it, not client", 1 * sec, 30, 90 * sec},
+		{"fast client interval is ignored", 100 * time.Millisecond, 30, 90 * sec},
+		{"old server (no advert) → client fallback", 5 * sec, 0, 15 * sec},
+		{"neither runs keepalives → disabled", 0, 0, 0},
+		{"absurd server value is clamped, not overflowed", 1 * sec, 1 << 40, 3 * maxAdvertisedKeepaliveSecs * sec},
+	}
+	for _, tc := range cases {
+		c := &Client{cfg: Config{Keepalive: tc.clientKA}}
+		got := c.readIdleTimeout(tunnel.AssignIP{KeepaliveSecs: tc.serverKASecs})
+		if got != tc.want {
+			t.Errorf("%s: readIdleTimeout = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

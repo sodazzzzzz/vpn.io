@@ -17,6 +17,19 @@ BOT_BIN="/usr/local/bin/vpn-bot"
 SERVER_BIN="/usr/local/bin/vpn-server"
 INSTALLERS="/etc/vpn-bot/installers"
 
+# Pinned minisign public key — the independent trust anchor for releases. The
+# checksum file (SHA256SUMS) is downloaded over the same channel as the binaries,
+# so whoever can alter release assets can regenerate the sums too; only a
+# signature made with a key that never touches the release lets us catch a
+# tampered release. We verify SHA256SUMS.minisig against THIS key before trusting
+# any hash — install is refused otherwise.
+#
+# One-time setup (see docs/RELEASES.md): generate the keypair once, keep the
+# secret key OFF the VPS (it lives only as the MINISIGN_SECRET_KEY release
+# secret), and paste the SECOND line of the .pub file (starts with "RW") below:
+#     minisign -G -p vpn-io.pub -s vpn-io.key
+MINISIGN_PUBKEY="RWTgDmnwVFmjgUVlyCF0Hz+ATSdQdswF/ac6tj/bgbE0SbsDLGEzWEH0"
+
 do_server=0
 assume_yes=0
 for a in "$@"; do
@@ -30,6 +43,23 @@ done
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+
+# Refuse to run until the operator has pinned the real release key: a placeholder
+# key can't verify anything, and silently skipping the signature check would
+# defeat the whole point.
+case "$MINISIGN_PUBKEY" in
+  RWQPLACEHOLDER*|"") echo "MINISIGN_PUBKEY is not pinned — edit vpn-update.sh and paste the release public key (see docs/RELEASES.md)" >&2; exit 1 ;;
+esac
+
+# minisign verifies the release signature. It's a small dependency; install it
+# rather than fall back to an unverified install.
+if ! command -v minisign >/dev/null; then
+  echo "==> installing minisign (required to verify the release signature)"
+  { command -v apt-get >/dev/null && apt-get update -qq && apt-get install -y -qq minisign; } || {
+    echo "minisign is required but could not be installed automatically; install it and retry" >&2
+    exit 1
+  }
+fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -51,8 +81,18 @@ dl() { echo "    download $1"; curl -fSL --retry 3 -o "$tmp/$1" "$base/$1"; }
 dl vpn-bot
 dl vpn-io-setup.exe
 dl vpn.io.pkg
-dl SHA256SUMS   # required — we refuse to install anything we can't verify
+dl SHA256SUMS          # required — we refuse to install anything we can't verify
+dl SHA256SUMS.minisig  # the signature over SHA256SUMS (verified below)
 [ "$do_server" = 1 ] && dl vpn-server
+
+# Signature check FIRST: prove SHA256SUMS itself is authentic (signed by the
+# pinned key) before trusting a single hash in it. Without this, a tampered
+# release could ship matching-but-malicious binaries and sums together.
+echo "==> verify release signature (minisign)"
+minisign -Vm "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -P "$MINISIGN_PUBKEY" >/dev/null || {
+  echo "SHA256SUMS signature did not verify against the pinned key — refusing to install" >&2
+  exit 1
+}
 
 # Integrity check against the release's published sums. Fail closed: every
 # downloaded file must have a matching entry, and the hashes must verify — an

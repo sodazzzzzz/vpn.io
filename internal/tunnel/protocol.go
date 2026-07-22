@@ -92,6 +92,13 @@ type AssignIP struct {
 	// server too old for it and fail with a clear message rather than mid-session
 	// (#143). Omitted (0) by pre-versioning servers.
 	ProtoVersion int `json:"proto,omitempty"`
+
+	// KeepaliveSecs is the server's keepalive interval in seconds. The client
+	// bases its read-idle deadline on this — the server is the pulse source — so
+	// the deadline can't be tripped by an interval mismatch between the two
+	// sides' configs (#179). Omitted (0) by older servers; the client then falls
+	// back to its own interval, preserving wire compatibility.
+	KeepaliveSecs int `json:"keepalive_secs,omitempty"`
 }
 
 // ErrorMsg is sent server→client (or vice versa) to report a fatal protocol

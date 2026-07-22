@@ -9,7 +9,7 @@ set -eu
 
 BIN="${BIN:-/usr/local/bin/vpn-helper}"
 LABEL=io.vpnio.helper
-PLIST_SRC="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/${LABEL}.plist"
+PLIST_SRC="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/${LABEL}.plist"
 PLIST_DST="/Library/LaunchDaemons/${LABEL}.plist"
 
 if [ "$(id -u)" -ne 0 ]; then
