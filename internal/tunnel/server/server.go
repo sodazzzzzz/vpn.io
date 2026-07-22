@@ -349,12 +349,13 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 
 	// Send the AssignIP control message before any data flows.
 	assign, err := tunnel.NewAssignIP(tunnel.AssignIP{
-		IP:      ip.String(),
-		Gateway: s.cfg.Gateway,
-		Netmask: s.cfg.Netmask,
-		MTU:     s.cfg.MTU,
-		Routes:  s.cfg.PushRoutes,
-		DNS:     s.cfg.PushDNS,
+		IP:            ip.String(),
+		Gateway:       s.cfg.Gateway,
+		Netmask:       s.cfg.Netmask,
+		MTU:           s.cfg.MTU,
+		Routes:        s.cfg.PushRoutes,
+		DNS:           s.cfg.PushDNS,
+		KeepaliveSecs: int(s.cfg.Keepalive / time.Second),
 	})
 	if err != nil {
 		s.log.Error("build assign_ip", "err", err)

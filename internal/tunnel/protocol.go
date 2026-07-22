@@ -60,6 +60,13 @@ type AssignIP struct {
 	MTU     int      `json:"mtu"`              // e.g. 1380
 	Routes  []string `json:"routes,omitempty"` // CIDRs, e.g. ["0.0.0.0/0"]
 	DNS     []string `json:"dns,omitempty"`    // resolver IPs, e.g. ["1.1.1.1"]
+
+	// KeepaliveSecs is the server's keepalive interval in seconds. The client
+	// bases its read-idle deadline on this — the server is the pulse source — so
+	// the deadline can't be tripped by an interval mismatch between the two
+	// sides' configs (#179). Omitted (0) by older servers; the client then falls
+	// back to its own interval, preserving wire compatibility.
+	KeepaliveSecs int `json:"keepalive_secs,omitempty"`
 }
 
 // ErrorMsg is sent server→client (or vice versa) to report a fatal protocol
