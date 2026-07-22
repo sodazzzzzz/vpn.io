@@ -5,6 +5,7 @@ package ipc
 import (
 	"fmt"
 	"net"
+	"runtime"
 
 	"golang.org/x/sys/windows"
 )
@@ -104,9 +105,18 @@ func pipeClientMatches(pipe windows.Handle, allowed []*windows.SID) (bool, strin
 	if err := impersonateNamedPipeClient(pipe); err != nil {
 		return false, "", err
 	}
-	// RevertToSelf must run before returning, or this thread keeps the client's
-	// identity for its next task.
-	defer func() { _ = windows.RevertToSelf() }()
+	// Impersonation sets the identity on the OS THREAD, not the goroutine. Pin
+	// the goroutine to its thread for the duration, or the scheduler could move
+	// it mid-check: OpenThreadToken would then read the wrong thread, or — worse —
+	// the goroutine could leave this thread still impersonating, and a later
+	// request reusing that thread (Server.handle runs one goroutine per accept)
+	// would run with the client's identity instead of LocalSystem. RevertToSelf
+	// then UnlockOSThread, strictly in that order.
+	runtime.LockOSThread()
+	defer func() {
+		_ = windows.RevertToSelf()
+		runtime.UnlockOSThread()
+	}()
 
 	var token windows.Token
 	// openAsSelf=true: open the thread token against the process token
