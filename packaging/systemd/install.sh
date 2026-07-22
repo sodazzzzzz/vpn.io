@@ -8,7 +8,7 @@
 set -eu
 
 BIN="${BIN:-/usr/local/bin/vpn-helper}"
-UNIT_SRC="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/vpn-helper.service"
+UNIT_SRC="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/vpn-helper.service"
 UNIT_DST=/etc/systemd/system/vpn-helper.service
 
 if [ "$(id -u)" -ne 0 ]; then
