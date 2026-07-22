@@ -53,8 +53,28 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Build every non-GUI binary for each target OS, so a go.mod/scripts
+      # refactor can't break the darwin/windows helper unnoticed before release.
+      # vpn-gui is a separate CGO/Wails module; its native build lives in the desktop workflows.
       - name: build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
         env:
           GOOS: ${{ matrix.target.goos }}
           GOARCH: ${{ matrix.target.goarch }}
-        run: go build ./cmd/vpn-ca ./cmd/vpn-server ./cmd/vpn-client
+        run: >-
+          go build
+          ./cmd/vpn-ca
+          ./cmd/vpn-server
+          ./cmd/vpn-client
+          ./cmd/vpn-helper
+          ./cmd/vpn-bot
+          ./cmd/vpn-ctl
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # shellcheck is preinstalled on the ubuntu-latest image — no extra action needed.
+      # Covers the root-privileged installer logic in packaging/ and the scripts/ helpers.
+      - name: shellcheck
+        run: find packaging scripts -name '*.sh' -print0 | xargs -0 -r shellcheck
