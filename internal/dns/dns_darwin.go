@@ -5,12 +5,33 @@ package dns
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/govpn/internal/execx"
 )
+
+// dnsBackupPath is the durable marker that records each network service's DNS
+// as it was BEFORE we ran `networksetup -setdnsservers`. It's the macOS analog
+// of the Linux resolv.conf backup: written at Apply so a crash (SIGKILL / panic
+// / reboot) that loses the in-memory snapshot can still be undone at the next
+// helper start. It lives in a root-writable dir that survives a reboot —
+// `networksetup` persists the DNS change to the system network config, so the
+// marker that reverses it must persist just as long. It's a var so tests can
+// point it at a temp file.
+var dnsBackupPath = "/Library/Application Support/vpn.io/dns-backup.json"
+
+// darwinBackup is the on-disk form of the pre-Apply DNS snapshot. Services maps
+// each network service we touched to its original resolver list; an empty (or
+// absent) list means the service had no manual DNS (auto/DHCP), which we put
+// back by passing the literal "empty" to networksetup.
+type darwinBackup struct {
+	Services map[string][]string `json:"services"`
+}
 
 func newRunner() Runner { return &darwinRunner{} }
 
@@ -29,16 +50,29 @@ func (d *darwinRunner) Apply(servers []string, _ string) error {
 	if len(svcs) == 0 {
 		return fmt.Errorf("no enabled network services found")
 	}
-	d.saved = make(map[string][]string, len(svcs))
+	// Snapshot every service's current DNS BEFORE mutating any of it, so the
+	// durable marker written next is complete: a crash mid-Apply then leaves a
+	// marker covering every service we're about to change, and getDNS failing
+	// here aborts before we've touched a thing (nothing to roll back).
+	saved := make(map[string][]string, len(svcs))
 	for _, svc := range svcs {
 		orig, err := d.getDNS(svc)
 		if err != nil {
-			// Roll back: undo whatever we changed before this one.
-			_ = d.Restore()
 			return fmt.Errorf("get DNS for %q: %w", svc, err)
 		}
-		d.saved[svc] = orig
+		saved[svc] = orig
+	}
+	d.saved = saved
+
+	// Persist the snapshot so a crash — which loses d.saved above — can still be
+	// undone by Clear/Reconcile. Best-effort: a clean Restore uses the in-memory
+	// snapshot, so a failed marker write only costs crash recovery, not
+	// correctness; don't fail Apply over it.
+	_ = writeDNSBackup(darwinBackup{Services: saved})
+
+	for _, svc := range svcs {
 		if err := d.setDNS(svc, servers); err != nil {
+			// Undo whatever we already changed (Restore also drops the marker).
 			_ = d.Restore()
 			return fmt.Errorf("set DNS for %q: %w", svc, err)
 		}
@@ -64,6 +98,13 @@ func (d *darwinRunner) Restore() error {
 		}
 	}
 	d.saved = nil
+	// Drop the durable marker only on a fully clean restore. If a service failed
+	// to revert, keep it so the next helper start (Reconcile) can finish the job —
+	// dropping it would strand that service on the dead tunnel resolver forever,
+	// the exact "no terminal after install" failure this marker guards against.
+	if firstErr == nil {
+		_ = removeDNSBackup()
+	}
 	return firstErr
 }
 
@@ -86,14 +127,50 @@ func (d *darwinRunner) Clear(log *slog.Logger) error {
 			}
 		}
 	}
+	// The forceful reset supersedes any recorded snapshot; drop it so a later
+	// Reconcile doesn't try to restore now-stale originals. Best-effort.
+	_ = removeDNSBackup()
 	return firstErr
 }
 
-// Reconcile is a no-op on macOS: nothing durable records that a prior run set
-// DNS, so at startup we can't tell our leftover config from a user's manual one
-// and must not touch it. Recovery is manual via --clear-dns for now; a durable
-// per-service snapshot for auto-heal is a follow-up.
-func (d *darwinRunner) Reconcile(_ *slog.Logger) error { return nil }
+// Reconcile is the crash-safe recovery run at helper startup. The durable marker
+// exists only if a previous run applied DNS and died without a clean Restore, so
+// its mere presence proves the mutation was ours: we put every recorded service
+// back to its pre-Apply resolvers (or auto/DHCP), then drop the marker. Absent a
+// marker it's a no-op, so a host we never configured is never touched — the
+// property the previous no-op implementation lacked (#217).
+func (d *darwinRunner) Reconcile(log *slog.Logger) error {
+	b, ok, err := readDNSBackup()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil // nothing of ours to undo
+	}
+	var firstErr error
+	for svc, orig := range b.Services {
+		// The list crossed disk since we wrote it; re-validate to bare IPs before
+		// handing it to networksetup, so a corrupted marker can't inject argv.
+		orig = validIPs(orig)
+		args := []string{"empty"}
+		if len(orig) > 0 {
+			args = orig
+		}
+		if err := d.setDNS(svc, args); err != nil {
+			log.Warn("dns: reconciling service from durable marker failed", "service", svc, "err", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reconcile DNS for %q: %w", svc, err)
+			}
+		}
+	}
+	if firstErr != nil {
+		// Keep the marker so the next helper start retries the recovery.
+		return firstErr
+	}
+	_ = removeDNSBackup()
+	log.Info("dns: reconciled DNS from a prior run's durable marker")
+	return nil
+}
 
 // listEnabledServices runs `networksetup -listallnetworkservices` and
 // returns active services (lines starting with "*" are disabled).
@@ -135,8 +212,56 @@ func (d *darwinRunner) getDNS(svc string) ([]string, error) {
 }
 
 func (d *darwinRunner) setDNS(svc string, servers []string) error {
+	return setDNSServers(svc, servers)
+}
+
+// setDNSServers is the single seam through which every DNS mutation shells out.
+// It's a var so tests can replace it and exercise the Restore/Reconcile logic
+// without touching the host's real resolver config.
+var setDNSServers = func(svc string, servers []string) error {
 	args := append([]string{"-setdnsservers", svc}, servers...)
-	if err := execx.Run("networksetup", args...); err != nil {
+	return execx.Run("networksetup", args...)
+}
+
+// writeDNSBackup persists the pre-Apply snapshot, creating the parent state dir
+// if needed. The file is root-only (0600 in a 0700 dir): it names the host's
+// network services, and only root should read or rewrite the recovery record.
+func writeDNSBackup(b darwinBackup) error {
+	data, err := json.Marshal(b)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dnsBackupPath), 0o700); err != nil {
+		return err
+	}
+	// Write atomically (temp + rename), as dns_linux.go does for its durable
+	// backup: a crash mid-write must not leave a truncated marker, which would
+	// make readDNSBackup fail to parse and wedge Reconcile on every later start.
+	tmp := dnsBackupPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dnsBackupPath)
+}
+
+// readDNSBackup loads the durable snapshot. ok is false (with a nil error) when
+// no marker exists — the common "nothing of ours to undo" case.
+func readDNSBackup() (b darwinBackup, ok bool, err error) {
+	data, err := os.ReadFile(dnsBackupPath)
+	if os.IsNotExist(err) {
+		return darwinBackup{}, false, nil
+	}
+	if err != nil {
+		return darwinBackup{}, false, fmt.Errorf("read dns backup: %w", err)
+	}
+	if err := json.Unmarshal(data, &b); err != nil {
+		return darwinBackup{}, false, fmt.Errorf("parse dns backup: %w", err)
+	}
+	return b, true, nil
+}
+
+func removeDNSBackup() error {
+	if err := os.Remove(dnsBackupPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
