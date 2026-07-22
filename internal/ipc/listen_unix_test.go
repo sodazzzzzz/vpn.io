@@ -93,6 +93,89 @@ func TestListenRejectsUnauthorizedPeer(t *testing.T) {
 	}
 }
 
+// TestListenRefusesWorldWritableDir: if the socket directory is writable by
+// others (world-writable without sticky), the stale-socket auto-removal is open
+// to TOCTOU, so Listen must refuse rather than silently create the socket.
+func TestListenRefusesWorldWritableDir(t *testing.T) {
+	// Short path under /tmp: a long t.TempDir() path hits the sun_path limit on
+	// macOS, so bind would fail before the directory-permission check runs.
+	dir, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	// Defeat umask: set world-write without the sticky bit explicitly.
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "s")
+	if _, err := Listen(sock, 0600, Policy{}, nil); err == nil {
+		t.Fatal("expected Listen to refuse a world-writable socket directory")
+	}
+}
+
+// TestListenAllowsPrivateDir: a private user directory (0700) must pass the
+// directory check and yield a working listener.
+func TestListenAllowsPrivateDir(t *testing.T) {
+	dir := t.TempDir() // t.TempDir() creates the directory with mode 0700
+	sock := filepath.Join(dir, "h.sock")
+	ln, err := Listen(sock, 0600, Policy{}, nil)
+	if err != nil {
+		t.Fatalf("Listen in private dir: %v", err)
+	}
+	_ = ln.Close()
+}
+
+// TestCheckSocketDirSafe covers the directory-check decisions directly: private
+// and root-only directories pass, a sticky directory (like /tmp) passes too (the
+// kernel won't let a stranger replace someone else's file there), while a group-
+// or world-writable directory without sticky is rejected.
+func TestCheckSocketDirSafe(t *testing.T) {
+	private := t.TempDir() // 0700, owned by us
+	if err := checkSocketDirSafe(private); err != nil {
+		t.Fatalf("private 0700 dir must be safe: %v", err)
+	}
+
+	sticky, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sticky)
+	if err := os.Chmod(sticky, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSocketDirSafe(sticky); err != nil {
+		t.Fatalf("world-writable+sticky dir must be safe: %v", err)
+	}
+
+	open, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(open)
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSocketDirSafe(open); err == nil {
+		t.Fatal("world-writable non-sticky dir must be rejected")
+	}
+
+	// Group-writable without sticky is just as exploitable as world-writable and
+	// must also be rejected (the docstring promises "writable by no one but the
+	// owner").
+	group, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(group)
+	if err := os.Chmod(group, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSocketDirSafe(group); err == nil {
+		t.Fatal("group-writable non-sticky dir must be rejected")
+	}
+}
+
 func TestListenRefusesNonSocketPath(t *testing.T) {
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "regular")
