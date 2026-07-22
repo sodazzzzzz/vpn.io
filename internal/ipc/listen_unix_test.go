@@ -93,6 +93,74 @@ func TestListenRejectsUnauthorizedPeer(t *testing.T) {
 	}
 }
 
+// TestListenRefusesWorldWritableDir: если каталог сокета доступен на запись
+// постороннему (мир-запись без sticky), авто-удаление stale-сокета уязвимо к
+// TOCTOU, поэтому Listen обязан отказать, а не создавать сокет молча.
+func TestListenRefusesWorldWritableDir(t *testing.T) {
+	// Короткий путь под /tmp: длинный путь t.TempDir() на macOS упирается в
+	// лимит sun_path, из-за чего bind падает раньше проверки прав каталога.
+	dir, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	// Обходим umask: явно выставляем мир-запись без sticky-бита.
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "s")
+	if _, err := Listen(sock, 0600, Policy{}, nil); err == nil {
+		t.Fatal("expected Listen to refuse a world-writable socket directory")
+	}
+}
+
+// TestListenAllowsPrivateDir: приватный каталог пользователя (0700) должен
+// проходить проверку каталога и давать рабочий листенер.
+func TestListenAllowsPrivateDir(t *testing.T) {
+	dir := t.TempDir() // t.TempDir() создаёт каталог с режимом 0700
+	sock := filepath.Join(dir, "h.sock")
+	ln, err := Listen(sock, 0600, Policy{}, nil)
+	if err != nil {
+		t.Fatalf("Listen in private dir: %v", err)
+	}
+	_ = ln.Close()
+}
+
+// TestCheckSocketDirSafe покрывает решения проверки каталога напрямую:
+// приватный и root-only каталоги проходят, sticky-каталог (как /tmp) тоже
+// (kernel не даёт постороннему подменить чужой файл), а мир-запись без
+// sticky отвергается.
+func TestCheckSocketDirSafe(t *testing.T) {
+	private := t.TempDir() // 0700, владелец — мы
+	if err := checkSocketDirSafe(private); err != nil {
+		t.Fatalf("private 0700 dir must be safe: %v", err)
+	}
+
+	sticky, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sticky)
+	if err := os.Chmod(sticky, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSocketDirSafe(sticky); err != nil {
+		t.Fatalf("world-writable+sticky dir must be safe: %v", err)
+	}
+
+	open, err := os.MkdirTemp("/tmp", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(open)
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSocketDirSafe(open); err == nil {
+		t.Fatal("world-writable non-sticky dir must be rejected")
+	}
+}
+
 func TestListenRefusesNonSocketPath(t *testing.T) {
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "regular")
