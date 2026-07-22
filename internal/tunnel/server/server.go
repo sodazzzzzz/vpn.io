@@ -364,6 +364,7 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 		MTU:           s.cfg.MTU,
 		Routes:        s.cfg.PushRoutes,
 		DNS:           s.cfg.PushDNS,
+		ProtoVersion:  tunnel.ProtocolVersion,
 		KeepaliveSecs: kaSecs,
 	})
 	if err != nil {
@@ -399,6 +400,35 @@ func (s *Server) handleConn(ctx context.Context, rawConn net.Conn) {
 	s.auditDisconnect(sess)
 }
 
+// admitHello handles a client's CtrlHello. It logs the advertised version and,
+// if the client is too old to interoperate with this build, hands the writer a
+// clear Error to send and ends the session (returns false). A malformed hello
+// is ignored (returns true) — not grounds to drop an otherwise working session.
+func (s *Server) admitHello(sess *Session, msg tunnel.ControlMessage) bool {
+	hello, err := tunnel.ParseHello(msg)
+	if err != nil {
+		s.log.Debug("bad hello from client", "cn", sess.CN, "err", err)
+		return true
+	}
+	if !tunnel.PeerCompatible(hello.Version) {
+		s.log.Warn("rejecting outdated client",
+			"cn", sess.CN, "client_version", hello.Version, "min", tunnel.MinPeerVersion)
+		em, mErr := tunnel.NewError("outdated_client",
+			fmt.Sprintf("client protocol version %d is too old; please update the app", hello.Version))
+		if mErr != nil {
+			sess.close()
+			return false
+		}
+		// The writer sends the Error and closes; wait for that so the reader
+		// doesn't return (and trigger a racing teardown) before it's on the wire.
+		sess.reject <- em
+		<-sess.closeCh
+		return false
+	}
+	s.log.Debug("client hello", "cn", sess.CN, "client_version", hello.Version)
+	return true
+}
+
 // sessionReader pulls frames from the client connection and either
 // dispatches control messages or writes data frames to the TUN device.
 //
@@ -420,6 +450,10 @@ func (s *Server) sessionReader(sess *Session) {
 			switch msg.Type {
 			case tunnel.CtrlKeepalive:
 				// rx is proof of life — nothing else to do.
+			case tunnel.CtrlHello:
+				if !s.admitHello(sess, msg) {
+					return // rejected: an Error was sent and the session ends
+				}
 			default:
 				s.log.Debug("ignoring unexpected control from client",
 					"cn", sess.CN, "type", msg.Type)
@@ -478,6 +512,12 @@ func (s *Server) sessionWriter(sess *Session) {
 	for {
 		select {
 		case <-sess.closeCh:
+			return
+		case msg := <-sess.reject:
+			// A control-plane rejection (e.g. an outdated client). Send it while
+			// we're still the sole writer, then end the session.
+			_ = tunnel.WriteControl(sess.Conn, msg)
+			sess.close()
 			return
 		case <-tick:
 			if err := tunnel.WriteControl(sess.Conn, tunnel.NewKeepalive()); err != nil {

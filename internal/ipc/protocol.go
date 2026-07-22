@@ -22,6 +22,14 @@ import (
 	"github.com/govpn/internal/frame"
 )
 
+// IPCVersion is the local control-protocol version this build speaks. A
+// packaged GUI can outlive the installed helper (they update independently), so
+// the front-end stamps this on every Request and the daemon rejects a request
+// from a newer front-end it can't understand — a clear "update the helper"
+// instead of an opaque decode failure on some future field (#143). Bump it only
+// for a breaking change to the IPC envelope or command semantics.
+const IPCVersion = 1
+
 // Command identifies a request the front-end sends to the daemon.
 type Command string
 
@@ -42,6 +50,9 @@ const (
 type Request struct {
 	Command Command         `json:"command"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+	// Version is the front-end's IPCVersion. Omitted (0) by pre-versioning
+	// front-ends, which the daemon treats as legacy and accepts.
+	Version int `json:"version,omitempty"`
 }
 
 // Response is the JSON envelope the daemon returns. OK reports whether the

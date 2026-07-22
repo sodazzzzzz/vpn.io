@@ -41,6 +41,76 @@ func TestControlRoundtrip(t *testing.T) {
 	}
 }
 
+func TestHelloRoundtrip(t *testing.T) {
+	var buf bytes.Buffer
+	msg, err := NewHello(ProtocolVersion)
+	if err != nil {
+		t.Fatalf("NewHello: %v", err)
+	}
+	if err := WriteControl(&buf, msg); err != nil {
+		t.Fatalf("WriteControl: %v", err)
+	}
+	_, body, err := ReadPacket(&buf)
+	if err != nil {
+		t.Fatalf("ReadPacket: %v", err)
+	}
+	decoded, err := DecodeControl(body)
+	if err != nil {
+		t.Fatalf("DecodeControl: %v", err)
+	}
+	got, err := ParseHello(decoded)
+	if err != nil {
+		t.Fatalf("ParseHello: %v", err)
+	}
+	if got.Version != ProtocolVersion {
+		t.Fatalf("hello version = %d, want %d", got.Version, ProtocolVersion)
+	}
+}
+
+// ParseHello rejects a control message that isn't a hello.
+func TestParseHelloWrongType(t *testing.T) {
+	if _, err := ParseHello(NewKeepalive()); err == nil {
+		t.Fatal("ParseHello on a keepalive: want an error")
+	}
+}
+
+func TestPeerCompatible(t *testing.T) {
+	cases := []struct {
+		version int
+		want    bool
+	}{
+		{0, true},                  // pre-versioning peer accepted as legacy
+		{MinPeerVersion, true},     // exactly the minimum
+		{MinPeerVersion + 1, true}, // newer than us is fine (additive)
+		{-1, false},                // below the floor (rejected once a future bump raises MinPeerVersion)
+	}
+	for _, tc := range cases {
+		if got := PeerCompatible(tc.version); got != tc.want {
+			t.Errorf("PeerCompatible(%d) = %v, want %v", tc.version, got, tc.want)
+		}
+	}
+}
+
+// The server's advertised ProtoVersion survives the wire and is omitted when 0
+// (legacy server), keeping older clients wire-compatible.
+func TestAssignIPProtoVersion(t *testing.T) {
+	msg, err := NewAssignIP(AssignIP{IP: "10.8.0.2", MTU: 1380, ProtoVersion: ProtocolVersion})
+	if err != nil {
+		t.Fatalf("NewAssignIP: %v", err)
+	}
+	got, err := ParseAssignIP(msg)
+	if err != nil {
+		t.Fatalf("ParseAssignIP: %v", err)
+	}
+	if got.ProtoVersion != ProtocolVersion {
+		t.Fatalf("ProtoVersion = %d, want %d", got.ProtoVersion, ProtocolVersion)
+	}
+	legacy, _ := NewAssignIP(AssignIP{IP: "10.8.0.2", MTU: 1380})
+	if bytes.Contains(legacy.Payload, []byte("proto")) {
+		t.Errorf("ProtoVersion 0 should be omitted from the wire: %s", legacy.Payload)
+	}
+}
+
 func TestAssignIPWithRoutesAndDNS(t *testing.T) {
 	want := AssignIP{
 		IP:      "10.8.0.2",

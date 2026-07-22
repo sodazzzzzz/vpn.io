@@ -368,11 +368,28 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 	if err != nil {
 		return fmt.Errorf("client: %w", err)
 	}
+
+	// Version negotiation (#143). Reject a server too old for this build with a
+	// clear message rather than an opaque mid-session failure, then announce our
+	// own version so a newer server can reject us the same way. A pre-versioning
+	// server advertises 0 and is accepted (PeerCompatible); the Hello is additive
+	// — older servers ignore the unknown control type.
+	if !tunnel.PeerCompatible(assign.ProtoVersion) {
+		return fmt.Errorf("%w: server speaks protocol v%d, this app needs at least v%d — update the server",
+			ErrFatalServer, assign.ProtoVersion, tunnel.MinPeerVersion)
+	}
+	if hello, herr := tunnel.NewHello(tunnel.ProtocolVersion); herr == nil {
+		if werr := tunnel.WriteControl(tlsConn, hello); werr != nil {
+			return classifyConnectError(werr)
+		}
+	}
+
 	c.log.Info("connected",
 		"server", c.cfg.Server,
 		"assigned", assign.IP,
 		"gateway", assign.Gateway,
 		"mtu", assign.MTU,
+		"server_proto", assign.ProtoVersion,
 	)
 
 	if err := c.ensureConfigured(assign); err != nil {

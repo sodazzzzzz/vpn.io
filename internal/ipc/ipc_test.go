@@ -88,6 +88,23 @@ func TestDispatchUnknownCommand(t *testing.T) {
 	}
 }
 
+// A front-end newer than the daemon is refused with a clear message; a legacy
+// (Version 0) or same-version front-end is accepted (#143).
+func TestDispatchRejectsNewerFrontEnd(t *testing.T) {
+	s := NewServer(nil, &fakeHandler{status: StatusResponse{State: "disconnected"}}, nil)
+
+	resp := s.dispatch(Request{Command: CmdStatus, Version: IPCVersion + 1})
+	if resp.OK || resp.Error == "" {
+		t.Fatalf("newer front-end should be rejected, got %+v", resp)
+	}
+
+	for _, v := range []int{0, IPCVersion} {
+		if resp := s.dispatch(Request{Command: CmdStatus, Version: v}); !resp.OK {
+			t.Fatalf("front-end version %d should be accepted, got %q", v, resp.Error)
+		}
+	}
+}
+
 func TestDispatchConnectPropagatesError(t *testing.T) {
 	h := &fakeHandler{connectErr: context.DeadlineExceeded}
 	s := NewServer(nil, h, nil)
