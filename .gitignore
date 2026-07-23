@@ -24,6 +24,8 @@
 
 # Local planning notes — not part of the published project
 /ROADMAP.md
+/TECH_ROADMAP.md
+/BUSINESS_PLAN.md
 
 # Claude Code runtime/local files (lock files, per-user local settings)
 .claude/*.lock
