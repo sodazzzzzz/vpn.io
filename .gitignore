@@ -17,6 +17,16 @@
 /vpn-helper
 /vpn-server
 
+# Same, but next to their package — `go build ./cmd/vpn-gui` from inside the
+# command directory drops the binary there, where the root anchors miss it.
+/cmd/*/vpn-bot
+/cmd/*/vpn-ca
+/cmd/*/vpn-client
+/cmd/*/vpn-ctl
+/cmd/*/vpn-gui
+/cmd/*/vpn-helper
+/cmd/*/vpn-server
+
 # Generated CA material — NEVER commit secrets
 /ca-data/
 *.key
@@ -24,6 +34,8 @@
 
 # Local planning notes — not part of the published project
 /ROADMAP.md
+/TECH_ROADMAP.md
+/BUSINESS_PLAN.md
 
 # Claude Code runtime/local files (lock files, per-user local settings)
 .claude/*.lock
