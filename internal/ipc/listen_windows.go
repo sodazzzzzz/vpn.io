@@ -9,7 +9,14 @@ import (
 	"os"
 
 	"github.com/Microsoft/go-winio"
+
+	"github.com/govpn/internal/frame"
 )
+
+// frameHeaderSize is the length prefix frame.WriteFrame puts in front of every
+// payload — counted in the pipe buffer sizes below so a maximum-size request
+// still fits whole.
+const frameHeaderSize = 2
 
 // pipeSDDL restricts who may open the control pipe — the Windows analogue of
 // the unix socket's file mode plus the peer-credential check. It grants:
@@ -56,7 +63,17 @@ func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net
 	// That is only half the defence: a squatter still owns a pipe the GUI might
 	// dial. Clients therefore verify the pipe's owner before sending anything —
 	// see verifyPipeServer in dial_windows.go.
-	ln, err := winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: pipeSDDL})
+	// Give the pipe real buffers. With the zero default, a client write does not
+	// complete until the server reads it, which couples the two sides far more
+	// tightly than the one-request-per-connection protocol needs — a request as
+	// small as a frame header could sit blocked behind whatever the server is
+	// doing. A single request must fit in frame.MaxFrameSize (64 KiB), so a
+	// buffer that size lets any well-formed request land in one go.
+	ln, err := winio.ListenPipe(path, &winio.PipeConfig{
+		SecurityDescriptor: pipeSDDL,
+		InputBufferSize:    frame.MaxFrameSize + frameHeaderSize,
+		OutputBufferSize:   frame.MaxFrameSize + frameHeaderSize,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen pipe %q: %w", path, err)
 	}

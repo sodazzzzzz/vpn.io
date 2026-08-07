@@ -102,21 +102,21 @@ func activeConsoleUserSID() (*windows.SID, error) {
 // whether it equals any allowed SID. The client SID is only compared while the
 // impersonation token buffer is alive, so it needs no copy.
 func pipeClientMatches(pipe windows.Handle, allowed []*windows.SID) (bool, string, error) {
-	if err := impersonateNamedPipeClient(pipe); err != nil {
-		return false, "", err
-	}
 	// Impersonation sets the identity on the OS THREAD, not the goroutine. Pin
-	// the goroutine to its thread for the duration, or the scheduler could move
-	// it mid-check: OpenThreadToken would then read the wrong thread, or — worse —
-	// the goroutine could leave this thread still impersonating, and a later
-	// request reusing that thread (Server.handle runs one goroutine per accept)
-	// would run with the client's identity instead of LocalSystem. RevertToSelf
-	// then UnlockOSThread, strictly in that order.
+	// the goroutine to its thread BEFORE impersonating, or the scheduler could
+	// move it mid-check: OpenThreadToken would then read the wrong thread, or —
+	// worse — the goroutine could leave the impersonated thread behind, and a
+	// later request reusing that thread (Server.handle runs one goroutine per
+	// accept) would run with the client's identity instead of LocalSystem.
+	// RevertToSelf then UnlockOSThread, strictly in that order.
 	runtime.LockOSThread()
 	defer func() {
 		_ = windows.RevertToSelf()
 		runtime.UnlockOSThread()
 	}()
+	if err := impersonateNamedPipeClient(pipe); err != nil {
+		return false, "", err
+	}
 
 	var token windows.Token
 	// openAsSelf=true: open the thread token against the process token

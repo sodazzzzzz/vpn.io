@@ -130,19 +130,29 @@ func (s *Server) handle(conn net.Conn) {
 
 	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
 
-	// Gate the connection by the caller's identity before reading its command.
+	// Read the request BEFORE authorizing. That order is required on Windows:
+	// authorizePeer impersonates the named-pipe client, and Windows only makes
+	// the client's security context available to the server once the server has
+	// read the client's message — impersonating first blocks on an overlapped
+	// pipe handle (which is what go-winio always creates) until the deadline,
+	// while the client is still blocked writing. Both sides then time out.
+	//
+	// Reading first is safe: a frame is bounded (frame.MaxFrameSize) and decoded
+	// into a plain envelope, and nothing is dispatched until the identity check
+	// below has passed.
+	req, err := ReadRequest(conn)
+	if err != nil {
+		s.log.Debug("ipc: read request", "err", err)
+		return
+	}
+
+	// Gate the connection by the caller's identity before acting on its command.
 	// On unix the listener already did this via peer credentials, so this is a
 	// no-op there; on Windows it's the real check that the caller is the console
 	// user, since the pipe SDDL alone can't express that (#178).
 	if err := authorizePeer(conn); err != nil {
 		s.log.Warn("ipc: rejected unauthorized control client", "err", err)
 		_ = WriteResponse(conn, errResponse(errors.New("not authorized to control the tunnel")))
-		return
-	}
-
-	req, err := ReadRequest(conn)
-	if err != nil {
-		s.log.Debug("ipc: read request", "err", err)
 		return
 	}
 
