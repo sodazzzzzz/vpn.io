@@ -35,6 +35,7 @@ import (
 	"github.com/govpn/internal/invite"
 	"github.com/govpn/internal/profile"
 	"github.com/govpn/internal/revoke"
+	"github.com/govpn/internal/watchdog"
 )
 
 const (
@@ -98,6 +99,9 @@ Commands:
         With -owner ID, that Telegram user can manage clients in-chat instead
         of this CLI: /invite <name>, /invites, /revoke <name>, /unrevoke <name>,
         /revoked. Anyone can /whoami to learn their own ID.
+        With -watch URL (needs -owner), also poll the node's health endpoint
+        and message the owner when it stops serving clients — and when it
+        recovers. See docs/BOT.md.
 
 Defaults: -dir ./ca-data, -store ./invite-tokens.json
 `)
@@ -167,6 +171,8 @@ func cmdServe(args []string) error {
 	installersDir := fs.String("installers", "", "directory with app installers (*.exe/*.pkg/*.deb) to offer after the profile; empty disables")
 	ownerID := fs.Int64("owner", 0, "Telegram user ID allowed to mint tokens with /invite (0 disables; send /whoami to the bot to find yours)")
 	inviteTTL := fs.Duration("invite-ttl", invite.DefaultInviteTTL, "how long an invite token stays redeemable after it's issued (0 = never expires)")
+	watchURL := fs.String("watch", "", "vpn-server health endpoint to watch, e.g. http://127.0.0.1:9443/readyz (empty disables; requires -owner)")
+	watchEvery := fs.Duration("watch-interval", watchdog.DefaultInterval, "how often to poll -watch")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -188,6 +194,10 @@ func cmdServe(args []string) error {
 		if fi, err := os.Stat(*installersDir); err != nil || !fi.IsDir() {
 			return fmt.Errorf("-installers %q is not a directory", *installersDir)
 		}
+	}
+	// A watchdog with nobody to notify is just load on the node it watches.
+	if *watchURL != "" && *ownerID == 0 {
+		return fmt.Errorf("-watch needs -owner: there is nobody to send an alert to")
 	}
 	// Load the CA once: it holds ca.key in memory for signing, so we don't
 	// re-read the key on every onboarding (and we fail fast here if it's
@@ -235,6 +245,29 @@ func cmdServe(args []string) error {
 	updates := make(chan tgbotapi.Update)
 	pollErr := make(chan error, 1)
 	go pollUpdates(ctx, bot, updates, pollErr)
+
+	// Watch the node, if asked to. The bot is where this belongs: it already
+	// holds the operator's chat and runs on the same machine as the server, so
+	// an alert needs no new service and no new credential. A failure to build
+	// the watcher is fatal — an operator who asked to be watched must not be
+	// left believing they are.
+	if *watchURL != "" {
+		w, err := watchdog.New(watchdog.Config{
+			URL:      *watchURL,
+			Interval: *watchEvery,
+			Notify:   func(text string) { reply(bot, *ownerID, text) },
+			Logf:     log.Printf,
+		})
+		if err != nil {
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.Run(ctx)
+		}()
+		log.Printf("watching %s every %s", *watchURL, *watchEvery)
+	}
 
 	for {
 		select {

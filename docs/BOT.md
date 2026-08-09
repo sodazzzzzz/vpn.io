@@ -177,6 +177,39 @@ re-inviting is how you give someone a replacement profile. It also revokes the
 profile it replaces, so a leaked `.vpnio` stops working the moment you re-invite
 that name — one name, one live profile.
 
+## Watching the node
+
+The bot runs next to `vpn-server` and already holds the owner's chat, so it is
+also where an alert costs nothing extra — no second service, no new credential.
+Point it at the node's readiness endpoint (see [SERVER.md](SERVER.md)):
+
+```
+-watch http://127.0.0.1:9443/readyz
+-watch-interval 1m          # optional; this is the default
+```
+
+`-watch` requires `-owner`: a watchdog with nobody to notify is just load on the
+node it watches, so the bot refuses to start rather than pretend.
+
+What arrives in the owner's chat:
+
+- 🔴 **an outage**, once — after three consecutive failed checks, with the
+  node's own words for what is wrong ("server certificate expired on …",
+  "revocation list cannot be read …"), or the transport error if it did not
+  answer at all;
+- 🟢 **the recovery**, as soon as it serves clients again;
+- 🟡 **a warning**, at most once a day, while something is heading for failure —
+  today that means a certificate approaching expiry.
+
+Nothing repeats while a state persists. A node that is down stays down, and a
+message every minute is how an operator learns to swipe these away; requiring
+three consecutive failures before speaking is what filters out a restart or a
+dropped packet.
+
+Two honest limits: this watches the **server**, not itself — if the bot is down,
+nothing arrives — and it polls over loopback, so it cannot tell you that the
+node is unreachable *from the internet*, only that it is broken from the inside.
+
 ## Notes
 
 - The token is 128-bit random and single-use; brute-forcing it is infeasible and
