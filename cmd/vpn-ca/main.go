@@ -11,10 +11,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/govpn/internal/ca"
 	"github.com/govpn/internal/profile"
@@ -44,6 +46,10 @@ func main() {
 		err = cmdRevoke(os.Args[2:])
 	case "unrevoke":
 		err = cmdUnrevoke(os.Args[2:])
+	case "backup":
+		err = cmdBackup(os.Args[2:])
+	case "restore":
+		err = cmdRestore(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -70,8 +76,16 @@ Commands:
                                                               bundle a client into one .vpnio file
   revoke       [-dir DIR] -name NAME                          revoke a client (server rejects it)
   unrevoke     [-dir DIR] -name NAME                          undo a revoke
+  backup       [-dir DIR] [-out FILE] [-passphrase-file F]    encrypted backup of the whole CA
+  restore      [-dir DIR] -in FILE [-passphrase-file F]       restore a CA from a backup
 
 Default -dir is ./ca-data.
+
+The backup passphrase is read from -passphrase-file (use "-" for stdin), or
+from $VPNIO_CA_PASSPHRASE. It is never prompted for and never echoed, so both
+commands work the same by hand and from a script:
+
+  pass show vpnio/ca-backup | vpn-ca backup -passphrase-file -
 `)
 }
 
@@ -317,6 +331,128 @@ func cmdExportProfile(args []string) error {
 	}
 	fmt.Printf("Wrote profile %s (client %q, server %s)\n", outPath, *name, *server)
 	return nil
+}
+
+// cmdBackup writes an encrypted copy of the entire CA directory to one file.
+// Losing the root key means re-onboarding every client, so this is the command
+// that exists to be run before that happens, not after.
+func cmdBackup(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir, "CA directory")
+	out := fs.String("out", "", `output file (default: ca-backup-<date>.vpnio-ca)`)
+	passFile := fs.String("passphrase-file", "", `file holding the backup passphrase ("-" for stdin; default $VPNIO_CA_PASSPHRASE)`)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pass, err := readPassphrase(*passFile)
+	if err != nil {
+		return err
+	}
+	data, err := ca.Backup(*dir, pass)
+	if err != nil {
+		return err
+	}
+	outPath := *out
+	if outPath == "" {
+		outPath = "ca-backup-" + time.Now().Format("2006-01-02") + ".vpnio-ca"
+	}
+	// O_EXCL, and no silent replace: a backup file is the thing you reach for on
+	// the worst day of the project, and overwriting yesterday's copy with a
+	// broken one should take a deliberate second command.
+	f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", outPath, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(outPath)
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	fmt.Printf("Wrote %s (%d bytes).\n", outPath, len(data))
+	fmt.Println("Store it somewhere the passphrase is not. Without the passphrase it cannot be opened — by anyone, including you.")
+	return nil
+}
+
+// cmdRestore rebuilds a CA directory from a backup, then re-loads it so the
+// command fails here rather than at the next issuance if anything is off.
+func cmdRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir, "directory to restore the CA into (must not already hold one)")
+	in := fs.String("in", "", "backup file to restore (required)")
+	passFile := fs.String("passphrase-file", "", `file holding the backup passphrase ("-" for stdin; default $VPNIO_CA_PASSPHRASE)`)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *in == "" {
+		return fmt.Errorf("-in is required")
+	}
+	data, err := os.ReadFile(*in)
+	if err != nil {
+		return fmt.Errorf("read backup: %w", err)
+	}
+	// Report what this file is before asking the passphrase to do any work: on a
+	// recovery day there is usually more than one backup lying around.
+	if createdAt, cn, err := ca.BackupInfo(data); err == nil {
+		fmt.Printf("Backup of CA %q, taken %s.\n", cn, createdAt.Format("2006-01-02 15:04 MST"))
+	}
+	pass, err := readPassphrase(*passFile)
+	if err != nil {
+		return err
+	}
+	if err := ca.Restore(data, *dir, pass); err != nil {
+		return err
+	}
+	a, err := ca.Load(*dir)
+	if err != nil {
+		return fmt.Errorf("restored files do not load as a CA: %w", err)
+	}
+	clients, err := a.ListClients()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Restored CA into %s\n  CN:      %s\n  valid:   until %s\n  clients: %d\n",
+		*dir, a.Cert.Subject.CommonName, a.Cert.NotAfter.Format("2006-01-02"), len(clients))
+	fmt.Println("Verify it before trusting it: vpn-ca list, then issue a throwaway client and connect with it.")
+	return nil
+}
+
+// readPassphrase takes the backup passphrase from a file (or stdin for "-"),
+// falling back to $VPNIO_CA_PASSPHRASE.
+//
+// There is deliberately no interactive prompt: a prompt would have to turn
+// terminal echo off to be safe, and getting that wrong on some terminal would
+// print a root-CA passphrase into a scrollback buffer. A file (or a password
+// manager piped into stdin) is both safer and scriptable.
+func readPassphrase(file string) (string, error) {
+	var raw []byte
+	switch {
+	case file == "-":
+		var err error
+		if raw, err = io.ReadAll(io.LimitReader(os.Stdin, 4096)); err != nil {
+			return "", fmt.Errorf("read passphrase from stdin: %w", err)
+		}
+	case file != "":
+		var err error
+		if raw, err = os.ReadFile(file); err != nil {
+			return "", fmt.Errorf("read passphrase file: %w", err)
+		}
+	default:
+		env, ok := os.LookupEnv("VPNIO_CA_PASSPHRASE")
+		if !ok || env == "" {
+			return "", fmt.Errorf("no passphrase: pass -passphrase-file FILE (or \"-\" for stdin), or set $VPNIO_CA_PASSPHRASE")
+		}
+		raw = []byte(env)
+	}
+	// Trim only the trailing newline a file or `echo` adds — not all whitespace,
+	// since a passphrase may legitimately end in a space.
+	s := strings.TrimRight(string(raw), "\r\n")
+	if s == "" {
+		return "", fmt.Errorf("passphrase is empty")
+	}
+	return s, nil
 }
 
 func splitHosts(s string) (dns []string, ips []net.IP) {

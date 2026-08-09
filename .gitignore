@@ -31,6 +31,13 @@
 /ca-data/
 *.key
 *.pem
+*.vpnio
+# CA backups (vpn-ca backup). Encrypted, but a committed one turns the whole
+# security of the CA into "how good is that passphrase" — and it would stay in
+# the history after any later removal.
+*.vpnio-ca
+# Passphrase files handed to `vpn-ca backup -passphrase-file`
+*.passphrase
 
 # Local planning notes — not part of the published project
 /ROADMAP.md

@@ -92,7 +92,10 @@ make build      # → ./bin/vpn-ca, vpn-server, vpn-client
    vpn-ca issue-client -name alice              # клиентский сертификат
    vpn-ca export-profile -name alice \
           -server vpn.example.com:8443 -out alice.vpnio   # один файл-профиль
+   vpn-ca backup -out ca-backup.vpnio-ca         # зашифрованная копия CA — сразу же
    ```
+   Потеря `ca.key` = перевыпуск сертификатов и повторная выдача профилей всем.
+   Как хранить копию и как из неё восстанавливаться — [docs/CA-RECOVERY.md](docs/CA-RECOVERY.md).
 2. **Сервер** — на арендованном VPS (Linux): [docs/SERVER.md](docs/SERVER.md).
 3. **Бот** — опционально, для самостоятельного онбординга людей: [docs/BOT.md](docs/BOT.md).
 4. **Релизы и обновления** — тег → Release → `vpn-update` на сервере: [docs/RELEASES.md](docs/RELEASES.md).
@@ -116,6 +119,7 @@ sudo make run-client CLIENT_NAME=alice SERVER=127.0.0.1:8443 SERVER_NAME=localho
 
 - [INSTALL.md](docs/INSTALL.md) — установка клиента (Windows / macOS / Linux)
 - [SERVER.md](docs/SERVER.md) — развёртывание сервера
+- [CA-RECOVERY.md](docs/CA-RECOVERY.md) — резервная копия CA и восстановление
 - [BOT.md](docs/BOT.md) — Telegram-бот онбординга
 - [RELEASES.md](docs/RELEASES.md) — релизы и обновление
 - [DESIGN.md](docs/DESIGN.md) · [PRODUCT.md](docs/PRODUCT.md) — дизайн-язык и продукт
