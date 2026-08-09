@@ -25,6 +25,41 @@ jobs:
       - name: test (race)
         run: go test -race ./...
 
+  fuzz:
+    name: fuzz (short)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Every fuzz target gets a fixed, small budget. This is not a fuzzing
+      # campaign — `go test` already replays each target's seed corpus and any
+      # committed regression inputs on every run, which is what stops a fixed
+      # crash from coming back. This job adds a short random search on top, so a
+      # shallow new bug is caught in the pull request that introduces it rather
+      # than never. Bounded on purpose: a job whose runtime creeps upward is a
+      # job someone eventually deletes.
+      #
+      # A crash found here writes the input to testdata/ in the runner's
+      # workspace; it is printed in the log and must be committed as a
+      # regression seed with the fix.
+      - name: fuzz each target
+        run: |
+          set -euo pipefail
+          budget=40s
+          while read -r pkg target; do
+            echo "==> $pkg $target ($budget)"
+            go test "$pkg" -run '^$' -fuzz "^${target}$" -fuzztime "$budget"
+          done <<'TARGETS'
+          ./internal/frame FuzzReadFrame
+          ./internal/frame FuzzRoundTrip
+          ./internal/tunnel FuzzReadPacket
+          ./internal/tunnel FuzzDecodeControl
+          ./internal/profile FuzzParseBundle
+          TARGETS
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest
