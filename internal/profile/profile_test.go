@@ -454,3 +454,185 @@ func TestBundleStringRedactsKey(t *testing.T) {
 		}
 	}
 }
+
+// --- endpoint lists (v2) -----------------------------------------------------
+
+// fixture is one valid credential set, reused by the endpoint-list tests.
+type fixture struct{ caPEM, certPEM, keyPEM []byte }
+
+func newFixture(t *testing.T) fixture {
+	t.Helper()
+	_, dir := testCA(t, "alice")
+	ca, cert, key := clientPEMs(t, dir, "alice")
+	return fixture{caPEM: ca, certPEM: cert, keyPEM: key}
+}
+
+// A profile written before endpoint lists existed must keep working untouched.
+// This is the compatibility promise the format change was allowed to make.
+func TestParseBundleV1StillLoads(t *testing.T) {
+	f := newFixture(t)
+	data, err := MarshalBundle(f.caPEM, f.certPEM, f.keyPEM, "vpn.example.com:8443", "")
+	if err != nil {
+		t.Fatalf("MarshalBundle: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := raw["version"]; got != float64(BundleVersionSingle) {
+		t.Errorf("single-endpoint bundle written as version %v, want %d — older apps would reject it",
+			got, BundleVersionSingle)
+	}
+	if _, ok := raw["endpoints"]; ok {
+		t.Error("single-endpoint bundle carries an endpoints list")
+	}
+
+	prof, err := ParseBundle(data)
+	if err != nil {
+		t.Fatalf("ParseBundle: %v", err)
+	}
+	if len(prof.Endpoints) != 1 {
+		t.Fatalf("v1 bundle yielded %d endpoints, want 1", len(prof.Endpoints))
+	}
+	if prof.Server != "vpn.example.com:8443" || prof.Endpoints[0].Server != prof.Server {
+		t.Errorf("v1 endpoint = %q / %q", prof.Server, prof.Endpoints[0].Server)
+	}
+	if prof.Endpoints[0].ServerName != "vpn.example.com" {
+		t.Errorf("SNI not defaulted from the host: %q", prof.Endpoints[0].ServerName)
+	}
+}
+
+func TestBundleRoundTripsMultipleEndpoints(t *testing.T) {
+	f := newFixture(t)
+	eps := []Endpoint{
+		{Server: "203.0.113.5:8443", Label: "main"},
+		{Server: "vpn2.example.com:8443", ServerName: "vpn.example.com", Label: "backup"},
+	}
+	data, err := MarshalBundleEndpoints(f.caPEM, f.certPEM, f.keyPEM, eps)
+	if err != nil {
+		t.Fatalf("MarshalBundleEndpoints: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := raw["version"]; got != float64(BundleVersionList) {
+		t.Errorf("multi-endpoint bundle written as version %v, want %d", got, BundleVersionList)
+	}
+
+	prof, err := ParseBundle(data)
+	if err != nil {
+		t.Fatalf("ParseBundle: %v", err)
+	}
+	if len(prof.Endpoints) != 2 {
+		t.Fatalf("got %d endpoints, want 2", len(prof.Endpoints))
+	}
+	// The primary fields keep pointing at the first endpoint, so every caller
+	// that only knows about one address keeps working.
+	if prof.Server != "203.0.113.5:8443" {
+		t.Errorf("primary Server = %q, want the first endpoint", prof.Server)
+	}
+	if prof.Endpoints[0].ServerName != "203.0.113.5" {
+		t.Errorf("first endpoint SNI = %q, want the host", prof.Endpoints[0].ServerName)
+	}
+	if prof.Endpoints[1].ServerName != "vpn.example.com" {
+		t.Errorf("explicit SNI not preserved: %q", prof.Endpoints[1].ServerName)
+	}
+	if prof.Endpoints[1].Label != "backup" {
+		t.Errorf("label not preserved: %q", prof.Endpoints[1].Label)
+	}
+}
+
+func TestParseBundleRejectsBadEndpointLists(t *testing.T) {
+	f := newFixture(t)
+	body := func(inner string) []byte {
+		b, err := json.Marshal(Bundle{
+			Version:   BundleVersionList,
+			CACertPEM: string(f.caPEM), CertPEM: string(f.certPEM), KeyPEM: string(f.keyPEM),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		var eps any
+		if err := json.Unmarshal([]byte(inner), &eps); err != nil {
+			t.Fatal(err)
+		}
+		m["endpoints"] = eps
+		out, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	cases := map[string]string{
+		"empty list":        `[]`,
+		"no port":           `[{"server":"vpn.example.com"}]`,
+		"port not numeric":  `[{"server":"vpn.example.com:https"}]`,
+		"port out of range": `[{"server":"vpn.example.com:70000"}]`,
+		"no host":           `[{"server":":8443"}]`,
+		"duplicate":         `[{"server":"a.example.com:8443"},{"server":"a.example.com:8443"}]`,
+	}
+	for name, inner := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseBundle(body(inner)); err == nil {
+				t.Fatalf("accepted %s", name)
+			}
+		})
+	}
+}
+
+// A file that claims v1 while carrying a v2 field was written by something
+// confused; guessing which half to believe is how a client ends up dialling an
+// address nobody intended.
+func TestParseBundleRejectsMixedVersions(t *testing.T) {
+	f := newFixture(t)
+	data, err := json.Marshal(Bundle{
+		Version:   BundleVersionSingle,
+		Server:    "a.example.com:8443",
+		Endpoints: []Endpoint{{Server: "b.example.com:8443"}},
+		CACertPEM: string(f.caPEM), CertPEM: string(f.certPEM), KeyPEM: string(f.keyPEM),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseBundle(data); err == nil {
+		t.Fatal("accepted a v1 bundle carrying an endpoint list")
+	}
+
+	// v2 may repeat the v1 field for older readers, but not contradict it.
+	data, err = json.Marshal(Bundle{
+		Version:   BundleVersionList,
+		Server:    "a.example.com:8443",
+		Endpoints: []Endpoint{{Server: "b.example.com:8443"}},
+		CACertPEM: string(f.caPEM), CertPEM: string(f.certPEM), KeyPEM: string(f.keyPEM),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseBundle(data); err == nil {
+		t.Fatal("accepted a v2 bundle whose server disagrees with its first endpoint")
+	}
+}
+
+func TestParseBundleRejectsFutureVersion(t *testing.T) {
+	f := newFixture(t)
+	data, err := json.Marshal(Bundle{
+		Version:   BundleVersionList + 1,
+		Endpoints: []Endpoint{{Server: "a.example.com:8443"}},
+		CACertPEM: string(f.caPEM), CertPEM: string(f.certPEM), KeyPEM: string(f.keyPEM),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ParseBundle(data)
+	if err == nil {
+		t.Fatal("accepted a bundle from the future")
+	}
+	if !strings.Contains(err.Error(), "update the app") {
+		t.Errorf("error does not tell the user what to do: %v", err)
+	}
+}
