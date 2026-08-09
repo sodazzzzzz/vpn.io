@@ -14,6 +14,30 @@ service. Three machines, each with different access to secrets:
 The CA private key (`ca.key`) stays on the trusted host and is **never** copied
 to the VPS, so a compromised VPS cannot issue new client certificates.
 
+## Fast path: provision a fresh VPS
+
+`packaging/server/provision.sh` does everything on this page that can be done on
+the VPS itself — packages, the signed release binary, forwarding, NAT, the unit,
+the firewall rule — and stops at the one step it must not do:
+
+```bash
+sudo bash provision.sh --server vpn.example.com:8443
+```
+
+It is **idempotent**: re-running never overwrites a tuned `server.env`, never
+restarts a healthy node for no reason, and skips anything already in place. Use
+it to rebuild a node, to move to a new machine, or to check a machine still
+matches what it should be (`--dry-run` prints the diff without touching
+anything).
+
+What it will not do is put certificates on the box — `ca.key` never leaves the
+CA host, so the last step is yours, and the script finishes by printing the
+exact commands for it. A node without certificates does not start, which is the
+correct failure.
+
+The manual walkthrough below is still the reference: read it once so you know
+what the script did.
+
 ## 1. On the CA host (once)
 
 ```bash
@@ -138,6 +162,30 @@ the client's *current* certificate only, and never resurrects a replaced one.
 - **Can't reach the server at all** → `8443/tcp` not open in the provider's
   firewall, or the connect address doesn't match the server certificate's
   `-hosts` SAN.
+
+## Decommissioning a node
+
+One command, on the node:
+
+```bash
+sudo packaging/server/uninstall.sh
+```
+
+It stops and unregisters the service and the update timer, reverts the NAT rule
+before deleting the helper that knows how, and removes the binaries — leaving
+`/etc/vpn-server` (config and certificates) for you to inspect or purge.
+
+On the CA host, nothing needs revoking: client certificates are bound to the
+**CA**, not to a node, so they keep working against whichever node you point
+people at next. The server certificate belongs to the retired machine — if it
+may have been copied, treat it as compromised (see
+[SECURITY-KEYS.md](SECURITY-KEYS.md)) and issue a new one for the replacement
+rather than moving the old pair over.
+
+If the node is being replaced rather than retired, the thing that actually needs
+planning is the address in people's profiles: a profile points at a host:port,
+so a new machine at a new address means every profile has to learn about it.
+Keep the old node serving until they have.
 
 ## Updating
 
