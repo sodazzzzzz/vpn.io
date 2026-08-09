@@ -73,8 +73,26 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 			attempt = 0
 		}
 
+		// The failure was retryable, so it says nothing about our credentials —
+		// only about reaching THIS address. Move to the next one the profile
+		// knows. With a single endpoint this is a no-op and the loop behaves
+		// exactly as it always has.
+		cycled := c.ring.advance()
+		if !cycled {
+			next := c.ring.current()
+			c.log.Info("trying the next endpoint", "endpoint", next.String(), "err", err)
+			if ctx.Err() != nil {
+				return nil
+			}
+			c.emitState(StateReconnecting)
+			continue
+		}
+
+		// Every endpoint has now failed once since the last success: waiting is
+		// earned. Backing off per address instead would multiply the dead air
+		// by the length of the list.
 		d := backoff(c.cfg.ReconnectMin, c.cfg.ReconnectMax, attempt)
-		c.log.Info("reconnect scheduled", "in", d, "attempt", attempt+1, "err", err)
+		c.log.Info("reconnect scheduled", "in", d, "attempt", attempt+1, "endpoint", c.ring.current().String(), "err", err)
 
 		// Don't report "reconnecting" if a cancel already arrived (e.g. the
 		// user disconnected during backoff) — otherwise the controller sees a

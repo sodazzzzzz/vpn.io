@@ -106,6 +106,7 @@ func TestRunReconnectLoop_CleanExitOnCancelDuringDial(t *testing.T) {
 		},
 		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		tlsConfig: &tls.Config{},
+		ring:      newEndpointRing([]Endpoint{{Server: "10.255.255.1:8443", ServerName: "10.255.255.1"}}, ""),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
