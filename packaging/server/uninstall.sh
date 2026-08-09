@@ -12,6 +12,10 @@ fi
 
 systemctl disable --now vpn-server.service 2>/dev/null || true
 rm -f /etc/systemd/system/vpn-server.service
+# The update timer, if it was ever enabled. Left behind it would keep firing
+# against a machine that no longer runs any of this.
+systemctl disable --now vpn-update.timer 2>/dev/null || true
+rm -f /etc/systemd/system/vpn-update.timer /etc/systemd/system/vpn-update.service
 systemctl daemon-reload || true
 
 # Revert the NAT rule BEFORE deleting the helper scripts (we're about to remove
@@ -44,5 +48,7 @@ fi
 
 rm -f /usr/local/bin/vpn-server
 rm -rf /usr/local/lib/vpn-server
+rm -f /usr/local/sbin/vpn-update
+rm -rf /var/lib/vpn-update
 
 echo "Removed vpn-server. Left /etc/vpn-server (config + certs) — 'sudo rm -rf /etc/vpn-server' to purge."

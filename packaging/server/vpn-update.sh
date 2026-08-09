@@ -6,16 +6,23 @@
 #                            (briefly drops the tunnel; prompts unless --yes)
 #   vpn-update.sh --all      same as --server
 #   vpn-update.sh --yes      don't prompt before the server restart
+#   vpn-update.sh --force    re-install even if the latest release is already on
 #
-# Nothing here auto-runs: you run it when you want a new release live. The bot
-# update is safe (no tunnel impact); the server update is opt-in because its
-# restart drops active VPN connections for a moment.
+# The bot update is safe (no tunnel impact) and can run unattended — see
+# vpn-update.timer, which runs exactly this script with no flags. The server
+# update stays manual and opt-in: its restart drops active VPN connections, and
+# an unattended bad release at 4am is debugged by nobody.
 set -euo pipefail
 
 REPO="sodazzzzzz/vpn.io"
 BOT_BIN="/usr/local/bin/vpn-bot"
 SERVER_BIN="/usr/local/bin/vpn-server"
 INSTALLERS="/etc/vpn-bot/installers"
+# Tag of the release currently installed. Written only after a run succeeds, so
+# a failed update never records itself as done. It is what makes the timer cheap
+# and quiet: an unattended daily run on an unchanged release does nothing at all
+# instead of re-downloading and bouncing the bot every night.
+STATE_FILE="/var/lib/vpn-update/installed-tag"
 
 # Pinned minisign public key — the independent trust anchor for releases. The
 # checksum file (SHA256SUMS) is downloaded over the same channel as the binaries,
@@ -30,13 +37,23 @@ INSTALLERS="/etc/vpn-bot/installers"
 #     minisign -G -p vpn-io.pub -s vpn-io.key
 MINISIGN_PUBKEY="RWTgDmnwVFmjgUVlyCF0Hz+ATSdQdswF/ac6tj/bgbE0SbsDLGEzWEH0"
 
+# record_tag remembers the release just installed. Called only after everything
+# has succeeded: a failure anywhere earlier leaves the previous value (or none),
+# so the next run retries instead of believing the update happened.
+record_tag() {
+  install -d -m 0755 "$(dirname "$STATE_FILE")"
+  printf '%s\n' "$tag" > "$STATE_FILE"
+}
+
 do_server=0
 assume_yes=0
+force=0
 for a in "$@"; do
   case "$a" in
     --server|--all) do_server=1 ;;
     --yes|-y)       assume_yes=1 ;;
-    -h|--help)      sed -n '2,12p' "$0"; exit 0 ;;
+    --force)        force=1 ;;
+    -h|--help)      sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -73,6 +90,15 @@ api="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
 tag="$(printf '%s\n' "$api" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
 [ -n "$tag" ] || { echo "could not determine the latest release tag" >&2; exit 1; }
 echo "    $tag"
+
+# Nothing to do if this exact release is already installed. --server is exempt:
+# the recorded tag says the bot was updated, not that the server binary was, so
+# an operator who ran the safe update yesterday can still take the server today.
+if [ "$force" != 1 ] && [ "$do_server" != 1 ] && [ -f "$STATE_FILE" ] &&
+   [ "$(cat "$STATE_FILE")" = "$tag" ]; then
+  echo "    already installed — nothing to do (--force to re-install)"
+  exit 0
+fi
 
 base="https://github.com/$REPO/releases/download/$tag"
 dl() { echo "    download $1"; curl -fSL --retry 3 -o "$tmp/$1" "$base/$1"; }
@@ -125,7 +151,7 @@ if [ "$do_server" = 1 ]; then
   if [ "$assume_yes" != 1 ]; then
     printf "Restart vpn-server now? This briefly drops the tunnel. [y/N] "
     read -r ans
-    case "$ans" in y|Y) ;; *) echo "    skipped server restart"; echo "==> done ($tag)"; exit 0 ;; esac
+    case "$ans" in y|Y) ;; *) echo "    skipped server restart"; record_tag; echo "==> done ($tag)"; exit 0 ;; esac
   fi
   echo "==> update server"
   install -m 0755 "$tmp/vpn-server" "$SERVER_BIN"
@@ -133,4 +159,5 @@ if [ "$do_server" = 1 ]; then
   echo "    vpn-server restarted"
 fi
 
+record_tag
 echo "==> done ($tag)"
