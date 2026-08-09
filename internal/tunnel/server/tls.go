@@ -25,7 +25,7 @@ import (
 // is not called on resumed TLS sessions, which would let a client that cached
 // a session ticket before its cert was revoked keep reconnecting past the
 // deny-list for the lifetime of the ticket.
-func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string, log *slog.Logger) (*tls.Config, error) {
+func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile string, revoked *revoke.Checker, log *slog.Logger) (*tls.Config, error) {
 	// The server key routinely reaches a node by scp, which leaves it 0644 —
 	// world-readable on a machine that may have other accounts. Say so loudly
 	// rather than refusing to start: the tunnel is what people depend on, and
@@ -47,8 +47,6 @@ func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string
 	if err != nil {
 		return nil, fmt.Errorf("load server cert/key: %w", err)
 	}
-
-	revoked := revoke.NewChecker(revokedFile)
 
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},

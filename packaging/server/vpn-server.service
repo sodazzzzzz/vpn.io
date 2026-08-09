@@ -22,6 +22,7 @@ ExecStart=/usr/local/bin/vpn-server \
     -revoked=${VPN_REVOKED} \
     -subnet ${VPN_SUBNET} -gateway ${VPN_GATEWAY} \
     -push-routes ${VPN_PUSH_ROUTES} -push-dns ${VPN_PUSH_DNS} \
+    -health-listen=${VPN_HEALTH_LISTEN} \
     -log-level info
 
 Restart=on-failure

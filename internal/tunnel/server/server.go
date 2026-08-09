@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/govpn/internal/ipalloc"
+	"github.com/govpn/internal/revoke"
 	"github.com/govpn/internal/tun"
 	"github.com/govpn/internal/tunnel"
 )
@@ -55,13 +56,17 @@ type Config struct {
 	CACertFile  string
 	CertFile    string
 	KeyFile     string
-	RevokedFile string        // optional deny-list of revoked client serials (hot-reloaded); empty = none
-	Subnet      string        // "10.8.0.0/24" — pool source
-	Gateway     string        // "10.8.0.1"    — server's TUN IP
-	Netmask     string        // "255.255.255.0" — for AssignIP and TUN config
-	MTU         int           // 1380
-	TUNName     string        // "" → driver picks
-	Keepalive   time.Duration // 0 → off
+	RevokedFile string // optional deny-list of revoked client serials (hot-reloaded); empty = none
+	// HealthListen is the address of the health/readiness HTTP endpoint
+	// ("127.0.0.1:9443"). Empty disables it. Bind it to loopback unless you
+	// have a reason not to — see health.go.
+	HealthListen string
+	Subnet       string        // "10.8.0.0/24" — pool source
+	Gateway      string        // "10.8.0.1"    — server's TUN IP
+	Netmask      string        // "255.255.255.0" — for AssignIP and TUN config
+	MTU          int           // 1380
+	TUNName      string        // "" → driver picks
+	Keepalive    time.Duration // 0 → off
 
 	// HandshakeTimeout bounds how long a single TLS handshake may take. The
 	// handshake is also bound to the server's lifetime, so a stuck client or a
@@ -95,6 +100,10 @@ type Server struct {
 	pool     *ipalloc.Pool
 	registry *Registry
 	limiter  *connLimiter
+	// revoked is the deny-list the handshake consults. It is kept here as well
+	// so the health endpoint can probe it: an unreadable list rejects every
+	// client, and that should show up as "not ready", not as a mystery.
+	revoked *revoke.Checker
 
 	// tunWriteMu serializes writes to the shared TUN device. sessionReader
 	// runs one goroutine per connected client and they all write to s.tun;
@@ -127,7 +136,8 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("server: nil TUN device")
 	}
 
-	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, cfg.RevokedFile, log)
+	revoked := revoke.NewChecker(cfg.RevokedFile)
+	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, revoked, log)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +162,7 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		tun:       dev,
 		pool:      pool,
 		registry:  NewRegistry(),
+		revoked:   revoked,
 		limiter:   newConnLimiter(cfg.MaxConnsPerIP, cfg.MaxConns, failedHandshakePenalty),
 		readyCh:   make(chan struct{}),
 		closeCh:   make(chan struct{}),
@@ -199,6 +210,16 @@ func (s *Server) Run(ctx context.Context) error {
 
 	s.wg.Add(1)
 	go s.runTUNReader()
+
+	// The health endpoint is started after the tunnel listener is bound, so it
+	// never reports a node as ready before it can accept anyone. A failure to
+	// bind it is logged, not fatal: losing the probe must not take the tunnel
+	// down with it — that would make the monitoring the outage.
+	if stopHealth, err := s.startHealth(); err != nil {
+		s.log.Error("server: health endpoint not started", "addr", s.cfg.HealthListen, "err", err)
+	} else if stopHealth != nil {
+		defer stopHealth()
+	}
 
 	// connCtx is cancelled by shutdown so in-flight handshakes abort promptly
 	// (HandshakeContext is bound to it) instead of pinning their goroutines
