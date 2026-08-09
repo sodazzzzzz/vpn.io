@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/govpn/internal/ca"
+	"github.com/govpn/internal/keyperm"
 	"github.com/govpn/internal/profile"
 	"github.com/govpn/internal/revoke"
 )
@@ -89,6 +90,33 @@ commands work the same by hand and from a script:
 `)
 }
 
+// loadCA opens the CA and checks that the private keys under it are still
+// owner-only. Keys are written 0600, but they get copied, restored and archived
+// by hand afterwards — and a mode that widened months ago is invisible until
+// someone looks. Every command that touches the CA goes through here, so the
+// operator gets told on an ordinary `vpn-ca list` rather than never (#291).
+func loadCA(dir string) (*ca.CA, error) {
+	a, err := ca.Load(dir)
+	if err != nil {
+		return nil, err
+	}
+	warnKeyPerms(
+		filepath.Join(dir, "ca.key"),
+		filepath.Join(dir, "server", "server.key"),
+	)
+	return a, nil
+}
+
+// warnKeyPerms prints a warning for each key file readable beyond its owner.
+// It writes to stderr so it stays visible when stdout is piped somewhere.
+func warnKeyPerms(paths ...string) {
+	for _, p := range paths {
+		if w := keyperm.Check(p); w != "" {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
+	}
+}
+
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir, "directory to hold CA material")
@@ -116,7 +144,7 @@ func cmdIssueServer(args []string) error {
 	if *hosts == "" {
 		return fmt.Errorf("-hosts is required (e.g. -hosts vpn.example.com,203.0.113.5)")
 	}
-	a, err := ca.Load(*dir)
+	a, err := loadCA(*dir)
 	if err != nil {
 		return err
 	}
@@ -138,7 +166,7 @@ func cmdIssueClient(args []string) error {
 	if *name == "" {
 		return fmt.Errorf("-name is required")
 	}
-	a, err := ca.Load(*dir)
+	a, err := loadCA(*dir)
 	if err != nil {
 		return err
 	}
@@ -155,7 +183,7 @@ func cmdList(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	a, err := ca.Load(*dir)
+	a, err := loadCA(*dir)
 	if err != nil {
 		return err
 	}
@@ -298,6 +326,7 @@ func cmdExportProfile(args []string) error {
 	if err != nil {
 		return fmt.Errorf("read client certificate (issue it first: vpn-ca issue-client -name %s): %w", *name, err)
 	}
+	warnKeyPerms(filepath.Join(*dir, "clients", *name+".key"))
 	keyPEM, err := os.ReadFile(filepath.Join(*dir, "clients", *name+".key"))
 	if err != nil {
 		return fmt.Errorf("read client key: %w", err)

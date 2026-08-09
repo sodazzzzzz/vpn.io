@@ -127,7 +127,7 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("server: nil TUN device")
 	}
 
-	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, cfg.RevokedFile)
+	tlsCfg, err := loadTLSConfig(cfg.CACertFile, cfg.CertFile, cfg.KeyFile, cfg.RevokedFile, log)
 	if err != nil {
 		return nil, err
 	}
