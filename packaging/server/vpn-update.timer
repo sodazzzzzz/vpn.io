@@ -1,0 +1,17 @@
+[Unit]
+Description=Daily check for a new vpn.io release (bot and installers only)
+Documentation=https://github.com/sodazzzzzz/vpn.io/blob/main/docs/RELEASES.md
+
+[Timer]
+# Once a day, plus up to six hours of jitter. The jitter is not cosmetic: every
+# installation of this project pulls from the same GitHub endpoint, and a fixed
+# time would have them all arrive in the same second.
+OnCalendar=daily
+RandomizedDelaySec=6h
+# Run a missed check after a reboot instead of waiting for the next window — a
+# VPS that was off overnight should still catch up.
+Persistent=true
+Unit=vpn-update.service
+
+[Install]
+WantedBy=timers.target

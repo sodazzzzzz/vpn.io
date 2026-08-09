@@ -1,0 +1,30 @@
+[Unit]
+Description=vpn.io — install the latest release (bot and installers only)
+Documentation=https://github.com/sodazzzzzz/vpn.io/blob/main/docs/RELEASES.md
+# Only ever runs the SAFE half of vpn-update: the bot and the installer files it
+# hands out. The tunnel is never touched here — replacing vpn-server drops
+# active connections, which is a decision a person makes, not a timer.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# No flags. Adding --server here would turn a safe unattended job into an
+# unattended tunnel restart; if you want that, run it by hand.
+ExecStart=/usr/local/sbin/vpn-update
+# The script verifies the release's minisign signature against a pinned key and
+# refuses to install anything that fails. A failure exits non-zero and lands in
+# the journal, and the unit is left in a failed state — `systemctl status
+# vpn-update` and `systemctl list-timers` both show it, so a broken update does
+# not look like a quiet success.
+#
+# Deliberately not sandboxed the way vpn-bot.service is. This unit's whole job is
+# to replace binaries in /usr/local/bin, write /etc/vpn-bot/installers, restart a
+# service and — on a host that does not have it yet — apt-get install minisign.
+# ProtectSystem= and friends would block exactly that, and the failure would show
+# up on an unattended run as an error nobody is watching for. The protection here
+# is the signature check inside the script, not confinement of a root job that
+# needs to write to the system by definition.
+#
+# A stalled download must not pin the unit forever.
+TimeoutStartSec=15min

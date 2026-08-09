@@ -58,15 +58,15 @@ Rotating the key later means repeating steps 1–3 and shipping the updated
 
 ## Update the VPS
 
-The updater lives at `packaging/server/vpn-update.sh`. Install it once, then it's
-a command. To fetch it the first time (long URLs get mangled when pasted into a
-terminal, so build it from short pieces):
+The updater lives at `packaging/server/vpn-update.sh`. `install.sh` puts it at
+`/usr/local/sbin/vpn-update` for you; to fetch it standalone (long URLs get
+mangled when pasted into a terminal, so build it from short pieces):
 
 ```bash
 U=https://raw.githubusercontent.com/sodazzzzzz/vpn.io
 U=$U/main/packaging/server/vpn-update.sh
-curl -fL "$U" -o /usr/local/bin/vpn-update
-chmod +x /usr/local/bin/vpn-update
+curl -fL "$U" -o /usr/local/sbin/vpn-update
+chmod +x /usr/local/sbin/vpn-update
 ```
 
 Then, whenever you cut a release:
@@ -86,9 +86,32 @@ It downloads the latest release, verifies `SHA256SUMS`'s minisign signature
 against the pinned key, checks the binaries against `SHA256SUMS`, installs them,
 refreshes `/etc/vpn-bot/installers/`, and restarts the relevant service.
 
-## Why not fully automatic
+## Unattended updates (the safe half)
 
-A cron/timer that pulled and restarted on its own would be convenient, but a bad
-release could silently drop everyone's tunnel at an unattended hour — and the
-people on it can't debug it. For a self-hosted personal VPN, predictability beats
-convenience, so the human stays in the loop: you decide when `--server` runs.
+`packaging/server/install.sh` installs the updater as `/usr/local/sbin/vpn-update`
+together with a systemd timer, but leaves the timer **off**. Turn it on when you
+want the bot and the installers it hands out to keep themselves current:
+
+```bash
+sudo systemctl enable --now vpn-update.timer
+systemctl list-timers vpn-update.timer     # when it next fires
+journalctl -u vpn-update                   # what it did last time
+```
+
+It runs `vpn-update` with **no flags** — daily, plus up to six hours of jitter so
+every installation of this project does not hit GitHub in the same second. On a
+release that is already installed it exits immediately without downloading
+anything (the tag it last installed is remembered in
+`/var/lib/vpn-update/installed-tag`; `--force` re-installs anyway).
+
+**`--server` is never automated.** Replacing `vpn-server` restarts it and drops
+active tunnels — a bad release doing that at 4am is debugged by nobody, and the
+people it disconnects are exactly the ones who cannot reach you. That half stays
+a decision you make while looking at it.
+
+The argument that used to keep *everything* manual — "an unattended update could
+pull a tampered release" — is answered since v0.2.0: releases are signed with
+minisign, the public key is pinned in `vpn-update.sh`, and verification is
+fail-closed. An update that does not verify installs nothing, exits non-zero and
+leaves the unit in a failed state, so `systemctl status vpn-update` and
+`systemctl list-timers` both show it rather than reporting a quiet success.

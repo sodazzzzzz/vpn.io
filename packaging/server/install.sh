@@ -61,6 +61,15 @@ fi
 
 echo "* systemd unit -> /etc/systemd/system/vpn-server.service"
 install -m 0644 "$SCRIPT_DIR/vpn-server.service" /etc/systemd/system/vpn-server.service
+
+# The updater and its timer are installed but NOT enabled: whether this VPS
+# updates itself is the operator's call, and enabling a job that restarts a
+# service on someone's behalf during an install would be a surprise.
+echo "* updater      -> /usr/local/sbin/vpn-update (+ timer, not enabled)"
+install -m 0755 "$SCRIPT_DIR/vpn-update.sh" /usr/local/sbin/vpn-update
+install -m 0644 "$SCRIPT_DIR/vpn-update.service" /etc/systemd/system/vpn-update.service
+install -m 0644 "$SCRIPT_DIR/vpn-update.timer"   /etc/systemd/system/vpn-update.timer
+
 systemctl daemon-reload
 
 cat <<'NEXT'
@@ -76,6 +85,9 @@ Installed. Next steps:
   4. Start it:
          sudo systemctl enable --now vpn-server
          journalctl -u vpn-server -f
+  5. Optional — let the bot and the installers it hands out update themselves
+     daily (the tunnel is never touched; vpn-server stays manual):
+         sudo systemctl enable --now vpn-update.timer
 
 See docs/SERVER.md for the full walkthrough.
 NEXT
