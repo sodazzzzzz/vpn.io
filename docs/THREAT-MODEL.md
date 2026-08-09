@@ -127,5 +127,6 @@ Current state, not aspiration:
 
 ## Reporting a problem
 
-If you have found something that breaks one of the protections above, report it
-privately to the project owner rather than opening a public issue.
+If you have found something that breaks one of the protections above, use
+GitHub's private vulnerability reporting rather than a public issue — see
+[SECURITY.md](../SECURITY.md).
