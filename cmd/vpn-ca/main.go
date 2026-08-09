@@ -73,8 +73,9 @@ Commands:
   issue-server [-dir DIR] -hosts host1,host2,1.2.3.4 [-cn N]  issue the server cert
   issue-client [-dir DIR] -name NAME                          issue a client cert
   list         [-dir DIR]                                     list issued clients (and revoked)
-  export-profile [-dir DIR] -name NAME -server HOST:PORT [-server-name S] [-out FILE]
+  export-profile [-dir DIR] -name NAME -server HOST:PORT [-server-name S] [-also A,B] [-out FILE]
                                                               bundle a client into one .vpnio file
+                                                              -also lists backup addresses for the same node
   revoke       [-dir DIR] -name NAME                          revoke a client (server rejects it)
   unrevoke     [-dir DIR] -name NAME                          undo a revoke
   backup       [-dir DIR] [-out FILE] [-passphrase-file F]    encrypted backup of the whole CA
@@ -302,6 +303,7 @@ func cmdExportProfile(args []string) error {
 	name := fs.String("name", "", "client name, already issued via issue-client (required)")
 	server := fs.String("server", "", "server address clients connect to, host:port (required)")
 	serverName := fs.String("server-name", "", "SNI / certificate verification host (optional; defaults to the server host)")
+	extra := fs.String("also", "", "additional addresses for the SAME node, comma-separated (host:port[=label]); tried in order if -server is unreachable")
 	out := fs.String("out", "", "output file (default: <name>.vpnio)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -332,7 +334,14 @@ func cmdExportProfile(args []string) error {
 		return fmt.Errorf("read client key: %w", err)
 	}
 
-	data, err := profile.MarshalBundle(caPEM, certPEM, keyPEM, *server, *serverName)
+	endpoints := []profile.Endpoint{{Server: *server, ServerName: *serverName}}
+	more, err := parseExtraEndpoints(*extra, *serverName)
+	if err != nil {
+		return err
+	}
+	endpoints = append(endpoints, more...)
+
+	data, err := profile.MarshalBundleEndpoints(caPEM, certPEM, keyPEM, endpoints)
 	if err != nil {
 		return fmt.Errorf("build profile bundle: %w", err)
 	}
@@ -358,8 +367,43 @@ func cmdExportProfile(args []string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
-	fmt.Printf("Wrote profile %s (client %q, server %s)\n", outPath, *name, *server)
+	if len(endpoints) > 1 {
+		fmt.Printf("Wrote profile %s (client %q, %d endpoints, primary %s)\n", outPath, *name, len(endpoints), *server)
+		fmt.Println("Note: a multi-endpoint profile needs an app new enough to read it; a single-endpoint profile stays readable by every released version.")
+	} else {
+		fmt.Printf("Wrote profile %s (client %q, server %s)\n", outPath, *name, *server)
+	}
 	return nil
+}
+
+// parseExtraEndpoints turns "host:port=label,host2:port" into endpoints.
+//
+// An explicit -server-name carries over to every extra address: they are the
+// same node reached another way, so they present the same certificate and must
+// be verified against the same name. With no -server-name, each address falls
+// back to its own host, exactly as the primary one does.
+func parseExtraEndpoints(raw, serverName string) ([]profile.Endpoint, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var out []profile.Endpoint
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		addr, label, _ := strings.Cut(part, "=")
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return nil, fmt.Errorf("-also: empty address in %q", part)
+		}
+		out = append(out, profile.Endpoint{
+			Server:     addr,
+			ServerName: serverName,
+			Label:      strings.TrimSpace(label),
+		})
+	}
+	return out, nil
 }
 
 // cmdBackup writes an encrypted copy of the entire CA directory to one file.
