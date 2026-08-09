@@ -108,10 +108,10 @@ echo "==> verify checksums"
     grep -E "[[:space:]]${f}\$" SHA256SUMS >> _check || true
   done
   got=$(grep -c . _check || true)
-  [ "$want" -gt 0 ] && [ "$got" -eq "$want" ] || {
+  if [ "$want" -eq 0 ] || [ "$got" -ne "$want" ]; then
     echo "checksum entries missing ($got/$want matched) — refusing to install" >&2
     exit 1
-  }
+  fi
   sha256sum -c _check )
 
 echo "==> update bot + installers"
