@@ -121,6 +121,7 @@ sudo make run-client CLIENT_NAME=alice SERVER=127.0.0.1:8443 SERVER_NAME=localho
 - [SERVER.md](docs/SERVER.md) — развёртывание сервера
 - [CA-RECOVERY.md](docs/CA-RECOVERY.md) — резервная копия CA и восстановление
 - [SECURITY-KEYS.md](docs/SECURITY-KEYS.md) — какие есть ключи, где лежат, как ротируются
+- [THREAT-MODEL.md](docs/THREAT-MODEL.md) — от чего защищает и от чего нет
 - [BOT.md](docs/BOT.md) — Telegram-бот онбординга
 - [RELEASES.md](docs/RELEASES.md) — релизы и обновление
 - [DESIGN.md](docs/DESIGN.md) · [PRODUCT.md](docs/PRODUCT.md) — дизайн-язык и продукт
@@ -128,3 +129,5 @@ sudo make run-client CLIENT_NAME=alice SERVER=127.0.0.1:8443 SERVER_NAME=localho
 ## Статус
 
 Пет-проект — рабочий и используется в проде для небольшого круга. Не проходил сторонний аудит безопасности; устанавливается без подписи Apple/Microsoft (как открыть — в [INSTALL.md](docs/INSTALL.md)).
+
+Что проект защищает, а что нет — честно и без смягчений в [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). Коротко: он прячет трафик от сети, в которой ты сидишь, и переносит точку видимости на сервер, которым владеешь ты. Это не анонимность и не обход блокировок.
