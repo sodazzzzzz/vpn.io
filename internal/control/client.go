@@ -49,11 +49,17 @@ type Status struct {
 type Credentials struct {
 	Server     string `json:"server"`               // "vpn.example.com:8443"
 	ServerName string `json:"serverName,omitempty"` // SNI / verification host; default = host of Server
-	CACertPEM  []byte `json:"caCertPem"`
-	CertPEM    []byte `json:"certPem"`
-	KeyPEM     []byte `json:"keyPem"`
-	MTU        int    `json:"mtu,omitempty"`     // TUN MTU; 0 = daemon default
-	TunName    string `json:"tunName,omitempty"` // requested TUN name; empty = driver picks
+	// Endpoints are the other addresses of the SAME node from the profile,
+	// tried in order when Server does not answer. Empty means "just Server".
+	Endpoints []profile.Endpoint `json:"endpoints,omitempty"`
+	// PreferredEndpoint is the address that worked last time, remembered by the
+	// front-end. Empty starts at the top of the list.
+	PreferredEndpoint string `json:"preferredEndpoint,omitempty"`
+	CACertPEM         []byte `json:"caCertPem"`
+	CertPEM           []byte `json:"certPem"`
+	KeyPEM            []byte `json:"keyPem"`
+	MTU               int    `json:"mtu,omitempty"`     // TUN MTU; 0 = daemon default
+	TunName           string `json:"tunName,omitempty"` // requested TUN name; empty = driver picks
 }
 
 // Connected reports who the validated certificate authenticates as — shown
@@ -97,18 +103,28 @@ func (c *Client) Connect(creds Credentials) (Connected, error) {
 	if creds.MTU < 0 {
 		return Connected{}, errors.New("MTU must not be negative")
 	}
-	prof, err := profile.LoadPEM(creds.CACertPEM, creds.CertPEM, creds.KeyPEM, creds.Server, creds.ServerName)
+	endpoints := creds.Endpoints
+	if len(endpoints) == 0 {
+		endpoints = []profile.Endpoint{{Server: creds.Server, ServerName: creds.ServerName}}
+	}
+	prof, err := profile.LoadPEMEndpoints(creds.CACertPEM, creds.CertPEM, creds.KeyPEM, endpoints)
 	if err != nil {
 		return Connected{}, fmt.Errorf("invalid credentials: %w", err)
 	}
+	ipcEndpoints := make([]ipc.Endpoint, 0, len(prof.Endpoints))
+	for _, ep := range prof.Endpoints {
+		ipcEndpoints = append(ipcEndpoints, ipc.Endpoint{Server: ep.Server, ServerName: ep.ServerName, Label: ep.Label})
+	}
 	payload, err := json.Marshal(ipc.ConnectRequest{
-		Server:     prof.Server,
-		ServerName: prof.ServerName,
-		CACertPEM:  prof.CACertPEM,
-		CertPEM:    prof.CertPEM,
-		KeyPEM:     prof.KeyPEM,
-		MTU:        creds.MTU,
-		TunName:    creds.TunName,
+		Server:            prof.Server,
+		ServerName:        prof.ServerName,
+		Endpoints:         ipcEndpoints,
+		PreferredEndpoint: creds.PreferredEndpoint,
+		CACertPEM:         prof.CACertPEM,
+		CertPEM:           prof.CertPEM,
+		KeyPEM:            prof.KeyPEM,
+		MTU:               creds.MTU,
+		TunName:           creds.TunName,
 	})
 	if err != nil {
 		return Connected{}, fmt.Errorf("encode connect request: %w", err)

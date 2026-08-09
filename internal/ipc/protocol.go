@@ -72,11 +72,27 @@ type Response struct {
 type ConnectRequest struct {
 	Server     string `json:"server"`                // "vpn.example.com:8443"
 	ServerName string `json:"server_name,omitempty"` // SNI override; default = host of Server
-	CACertPEM  []byte `json:"ca_cert_pem"`           // CA the server is verified against
-	CertPEM    []byte `json:"cert_pem"`              // client certificate
-	KeyPEM     []byte `json:"key_pem"`               // client private key
-	MTU        int    `json:"mtu,omitempty"`         // TUN MTU; 0 = daemon default
-	TunName    string `json:"tun_name,omitempty"`    // requested TUN name; empty = driver picks
+	// Endpoints are the other addresses of the SAME node, tried in order when
+	// Server does not answer. Additive and optional: a daemon that predates it
+	// ignores the field and connects to Server, which is exactly the old
+	// behaviour — so no protocol version bump.
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
+	// PreferredEndpoint is the address that worked last time. The daemon starts
+	// there instead of at the top of the list.
+	PreferredEndpoint string `json:"preferred_endpoint,omitempty"`
+	CACertPEM         []byte `json:"ca_cert_pem"`        // CA the server is verified against
+	CertPEM           []byte `json:"cert_pem"`           // client certificate
+	KeyPEM            []byte `json:"key_pem"`            // client private key
+	MTU               int    `json:"mtu,omitempty"`      // TUN MTU; 0 = daemon default
+	TunName           string `json:"tun_name,omitempty"` // requested TUN name; empty = driver picks
+}
+
+// Endpoint is one address of the node as carried over IPC. It mirrors the
+// profile's endpoint, minus anything the daemon has no use for.
+type Endpoint struct {
+	Server     string `json:"server"`
+	ServerName string `json:"server_name,omitempty"`
+	Label      string `json:"label,omitempty"`
 }
 
 // StatusResponse is the payload returned for CmdStatus. State is one of the
