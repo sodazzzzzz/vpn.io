@@ -130,4 +130,5 @@ Treat it as compromised: anyone holding it can issue a client certificate the
 server accepts, and revocation cannot help — the deny-list works by serial, and
 they can mint serials you have never seen. The only fix is the same rebuild as
 above, plus working out how the copy happened before rebuilding onto the same
-machine.
+machine. The full procedure, and the same for every other key in the project,
+is in [SECURITY-KEYS.md](SECURITY-KEYS.md).

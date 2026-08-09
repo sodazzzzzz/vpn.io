@@ -4,8 +4,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"os"
 
+	"github.com/govpn/internal/keyperm"
 	"github.com/govpn/internal/revoke"
 )
 
@@ -23,7 +25,15 @@ import (
 // is not called on resumed TLS sessions, which would let a client that cached
 // a session ticket before its cert was revoked keep reconnecting past the
 // deny-list for the lifetime of the ticket.
-func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string) (*tls.Config, error) {
+func loadTLSConfig(caCertFile, serverCertFile, serverKeyFile, revokedFile string, log *slog.Logger) (*tls.Config, error) {
+	// The server key routinely reaches a node by scp, which leaves it 0644 —
+	// world-readable on a machine that may have other accounts. Say so loudly
+	// rather than refusing to start: the tunnel is what people depend on, and
+	// nobody can fix the mode from a VPN that won't come up (#291).
+	if warning := keyperm.Check(serverKeyFile); warning != "" {
+		log.Warn("server: " + warning)
+	}
+
 	caPEM, err := os.ReadFile(caCertFile)
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert %q: %w", caCertFile, err)

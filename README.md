@@ -120,6 +120,7 @@ sudo make run-client CLIENT_NAME=alice SERVER=127.0.0.1:8443 SERVER_NAME=localho
 - [INSTALL.md](docs/INSTALL.md) — установка клиента (Windows / macOS / Linux)
 - [SERVER.md](docs/SERVER.md) — развёртывание сервера
 - [CA-RECOVERY.md](docs/CA-RECOVERY.md) — резервная копия CA и восстановление
+- [SECURITY-KEYS.md](docs/SECURITY-KEYS.md) — какие есть ключи, где лежат, как ротируются
 - [BOT.md](docs/BOT.md) — Telegram-бот онбординга
 - [RELEASES.md](docs/RELEASES.md) — релизы и обновление
 - [DESIGN.md](docs/DESIGN.md) · [PRODUCT.md](docs/PRODUCT.md) — дизайн-язык и продукт
