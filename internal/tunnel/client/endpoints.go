@@ -123,10 +123,3 @@ func (r *endpointRing) succeeded() Endpoint {
 	r.tried = 0
 	return r.eps[r.idx]
 }
-
-// all returns a copy of the list, for display.
-func (r *endpointRing) all() []Endpoint {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]Endpoint(nil), r.eps...)
-}
