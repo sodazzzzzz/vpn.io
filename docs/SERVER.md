@@ -26,6 +26,15 @@ vpn-ca issue-client  -name mylaptop           # → ca-data/clients/mylaptop.{cr
 `-hosts` **must** contain the address clients connect to (domain and/or IP): it
 goes into the certificate SAN, and each client verifies the server against it.
 
+Back the CA up now, while it holds only one client — the habit is what matters,
+and losing `ca.key` later means re-issuing and re-delivering every profile:
+
+```bash
+vpn-ca backup -out ca-backup.vpnio-ca         # encrypted; store it off this machine
+```
+
+See [CA-RECOVERY.md](CA-RECOVERY.md) for where to keep it and how to restore.
+
 ## 2. Provision the VPS
 
 - OS: **Ubuntu Server 24.04 LTS** or **Debian 12** — iptables-based NAT, which is
