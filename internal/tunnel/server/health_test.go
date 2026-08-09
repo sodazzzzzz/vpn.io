@@ -129,6 +129,40 @@ func TestHealthNotReadyOnUnreadableRevocationList(t *testing.T) {
 	}
 }
 
+// A node on its way down must stop claiming it can take clients: the listener
+// object still exists after shutdown closes it, so "the listener is not nil" is
+// not the same question as "can anyone connect".
+func TestHealthNotReadyWhileShuttingDown(t *testing.T) {
+	h := startServer(t, "10.9.6.0/24", "10.9.6.1", "255.255.255.0")
+	h.shutdown()
+
+	code, rep := getHealth(t, h.srv.HealthHandler(), "/readyz")
+	if code != http.StatusServiceUnavailable || rep.Ready {
+		t.Errorf("/readyz = %d ready=%v while shutting down, want 503/false", code, rep.Ready)
+	}
+	if code, _ := getHealth(t, h.srv.HealthHandler(), "/healthz"); code != http.StatusServiceUnavailable {
+		t.Errorf("/healthz = %d while shutting down, want 503", code)
+	}
+}
+
+// A certificate that expired a few hours ago must report a negative day count,
+// not zero: a monitor keying on the sign of that number would read a truncated
+// zero as "expires today, fine".
+func TestHealthCertExpiryDaysGoNegativeImmediately(t *testing.T) {
+	h := startServer(t, "10.9.7.0/24", "10.9.7.1", "255.255.255.0")
+	defer h.shutdown()
+
+	leaf := h.srv.leafCert()
+	restore := now
+	now = func() time.Time { return leaf.NotAfter.Add(6 * time.Hour) }
+	defer func() { now = restore }()
+
+	_, rep := getHealth(t, h.srv.HealthHandler(), "/readyz")
+	if rep.CertExpiresInDays >= 0 {
+		t.Errorf("certExpiresInDays = %d six hours after expiry, want negative", rep.CertExpiresInDays)
+	}
+}
+
 // The endpoint is opt-out: an empty address starts nothing at all, and must not
 // keep the tunnel from running.
 func TestHealthListenerDisabledByEmptyAddress(t *testing.T) {

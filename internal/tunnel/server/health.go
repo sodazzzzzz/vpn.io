@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -66,6 +67,18 @@ func (s *Server) Health() HealthReport {
 		TUN:      s.tun.Name(),
 		Sessions: len(s.registry.Snapshot()),
 	}
+	// A server that is shutting down still has a listener object, but it is
+	// closed and every session is being torn down — reporting "ready" through
+	// that window tells a probe to keep sending clients to a node that is
+	// refusing them.
+	select {
+	case <-s.closeCh:
+		rep.Live = false
+		rep.Ready = false
+		rep.NotReady = append(rep.NotReady, "the node is shutting down")
+	default:
+	}
+
 	if addr := s.Addr(); addr != nil {
 		rep.Listen = addr.String()
 	} else {
@@ -79,7 +92,10 @@ func (s *Server) Health() HealthReport {
 	if leaf := s.leafCert(); leaf != nil {
 		rep.CertNotAfter = leaf.NotAfter
 		remaining := leaf.NotAfter.Sub(now())
-		rep.CertExpiresInDays = int(remaining / (24 * time.Hour))
+		// Floor, not truncate: integer division of a Duration rounds toward
+		// zero, so a certificate that expired six hours ago would report "0
+		// days" — a monitor keying on the sign would read that as fine.
+		rep.CertExpiresInDays = int(math.Floor(remaining.Hours() / 24))
 		switch {
 		case now().After(leaf.NotAfter):
 			rep.Ready = false
