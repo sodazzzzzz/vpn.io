@@ -16,11 +16,16 @@ EnvironmentFile=/etc/vpn-bot/bot.env
 # -owner <your-telegram-id> (optional) enables /invite, /revoke, /unrevoke and
 # /revoked in a private chat with the bot — send /whoami to learn your ID, then
 # add the flag here and restart.
+# -watch polls the server's readiness endpoint and messages the owner when the
+# node stops serving clients (and when it recovers). It needs -owner set, and
+# the server's VPN_HEALTH_LISTEN to match this address; drop the line to
+# disable. See docs/BOT.md.
 ExecStart=/usr/local/bin/vpn-bot serve \
     -dir /etc/vpn-bot/ca-data \
     -server 203.0.113.5:8443 \
     -store /etc/vpn-bot/invite-tokens.json \
-    -installers /etc/vpn-bot/installers
+    -installers /etc/vpn-bot/installers \
+    -watch http://127.0.0.1:9443/readyz
 Restart=on-failure
 RestartSec=3
 
