@@ -105,13 +105,23 @@ func (c *Controller) Connect(req ipc.ConnectRequest) error {
 		return fmt.Errorf("open tun: %w", err)
 	}
 
+	eps := make([]client.Endpoint, 0, len(req.Endpoints))
+	for _, ep := range req.Endpoints {
+		eps = append(eps, client.Endpoint{Server: ep.Server, ServerName: ep.ServerName, Label: ep.Label})
+	}
 	cfg := client.Config{
-		Server:     req.Server,
-		ServerName: req.ServerName,
-		CACertPEM:  req.CACertPEM,
-		CertPEM:    req.CertPEM,
-		KeyPEM:     req.KeyPEM,
-		OnState:    c.onEngineState,
+		Server:            req.Server,
+		ServerName:        req.ServerName,
+		Endpoints:         eps,
+		PreferredEndpoint: req.PreferredEndpoint,
+		CACertPEM:         req.CACertPEM,
+		CertPEM:           req.CertPEM,
+		KeyPEM:            req.KeyPEM,
+		OnState:           c.onEngineState,
+		// Report the address that actually worked, so Status names the endpoint
+		// in use rather than the one that was asked for first — and so the
+		// front-end can remember it for next time.
+		OnEndpoint: c.onEngineEndpoint,
 	}
 	eng, err := c.newEng(cfg, dev, c.log)
 	if err != nil {
@@ -186,6 +196,14 @@ func (c *Controller) Status() ipc.StatusResponse {
 		resp.SinceUnix = c.since.Unix()
 	}
 	return resp
+}
+
+// onEngineEndpoint records which address produced the live session. Called from
+// the engine's goroutine, so it takes the same lock as every other mutation.
+func (c *Controller) onEngineEndpoint(ep client.Endpoint) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.server = ep.Server
 }
 
 // onEngineState maps the client engine's transitions onto controller state.

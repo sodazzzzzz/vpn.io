@@ -3,6 +3,8 @@ package profilestore
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/govpn/internal/profile"
 	"runtime"
 	"testing"
 )
@@ -118,5 +120,53 @@ func TestClear(t *testing.T) {
 	// Clear on an already-absent file is a no-op.
 	if err := s.Clear(); err != nil {
 		t.Errorf("Clear on absent file: %v", err)
+	}
+}
+
+// A saved profile must carry its endpoint list and the remembered address, and
+// bring both back — that memory is the whole point of storing it locally.
+func TestSaveLoadEndpoints(t *testing.T) {
+	st := &Store{Path: filepath.Join(t.TempDir(), "profile.json")}
+	in := Profile{
+		Server: "a.example.com:8443",
+		Endpoints: []profile.Endpoint{
+			{Server: "a.example.com:8443"},
+			{Server: "b.example.com:8443", Label: "backup"},
+		},
+		LastEndpoint: "b.example.com:8443",
+		CACertPEM:    []byte("ca"), CertPEM: []byte("cert"), KeyPEM: []byte("key"),
+	}
+	if err := st.Save(in); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, ok, err := st.Load()
+	if err != nil || !ok {
+		t.Fatalf("Load: ok=%v err=%v", ok, err)
+	}
+	if len(got.Endpoints) != 2 || got.Endpoints[1].Label != "backup" {
+		t.Errorf("endpoints did not round-trip: %+v", got.Endpoints)
+	}
+	if got.LastEndpoint != "b.example.com:8443" {
+		t.Errorf("LastEndpoint = %q", got.LastEndpoint)
+	}
+}
+
+// A profile written before endpoint lists existed still loads, with no
+// endpoints and no memory — the single Server is all it ever had.
+func TestLoadProfileWithoutEndpoints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.json")
+	old := `{"server":"old.example.com:8443","caCertPem":"Y2E=","certPem":"Y2VydA==","keyPem":"a2V5"}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := (&Store{Path: path}).Load()
+	if err != nil || !ok {
+		t.Fatalf("Load: ok=%v err=%v", ok, err)
+	}
+	if got.Server != "old.example.com:8443" {
+		t.Errorf("Server = %q", got.Server)
+	}
+	if len(got.Endpoints) != 0 || got.LastEndpoint != "" {
+		t.Errorf("old profile gained endpoints out of nowhere: %+v / %q", got.Endpoints, got.LastEndpoint)
 	}
 }

@@ -140,6 +140,13 @@ type App struct {
 	keyName  string
 	form     ConnectForm
 	lastCN   string // CN from the most recent successful validation, for display
+
+	// endpoints is every address the imported profile knows for the node;
+	// lastEndpoint is the one that last produced a working session, remembered
+	// so the next connect starts where the last one succeeded rather than at
+	// the top of the list.
+	endpoints    []profile.Endpoint
+	lastEndpoint string
 }
 
 // NewApp constructs the backend targeting the daemon's control socket and loads
@@ -161,6 +168,7 @@ func NewApp() *App {
 		a.caPEM, a.certPEM, a.keyPEM = p.CACertPEM, p.CertPEM, p.KeyPEM
 		a.caName, a.certName, a.keyName = p.CAName, p.CertName, p.KeyName
 		a.form = ConnectForm{Server: p.Server, ServerName: p.ServerName, MTU: p.MTU, TunName: p.TunName}
+		a.endpoints, a.lastEndpoint = p.Endpoints, p.LastEndpoint
 	}
 	return a
 }
@@ -184,7 +192,47 @@ func (a *App) onBeforeClose(context.Context) bool {
 
 // Status reports the daemon's current connection state. The front-end polls
 // this; a transport error (typically "daemon not running") comes back as-is.
-func (a *App) Status() (control.Status, error) { return a.cl.Status() }
+//
+// It is also where the working endpoint is learned: the daemon reports the
+// address the live session actually used, which — with a multi-address profile
+// — need not be the one we asked for first. Remembering it here means the next
+// connect starts at an address known to work instead of timing out on a dead
+// one, and the polling loop is the only place the front-end hears about it.
+func (a *App) Status() (control.Status, error) {
+	st, err := a.cl.Status()
+	if err == nil && st.State == "connected" && st.Server != "" {
+		a.rememberEndpoint(st.Server)
+	}
+	return st, err
+}
+
+// rememberEndpoint persists server as the last known-good address, if it is one
+// this profile actually lists and is not already recorded.
+func (a *App) rememberEndpoint(server string) {
+	a.mu.Lock()
+	if a.lastEndpoint == server || len(a.endpoints) == 0 {
+		a.mu.Unlock()
+		return
+	}
+	known := false
+	for _, ep := range a.endpoints {
+		if ep.Server == server {
+			known = true
+			break
+		}
+	}
+	if !known {
+		a.mu.Unlock()
+		return
+	}
+	a.lastEndpoint = server
+	form := a.form
+	ca, cert, key := a.caPEM, a.certPEM, a.keyPEM
+	caN, certN, keyN := a.caName, a.certName, a.keyName
+	a.mu.Unlock()
+
+	a.save(form, ca, cert, key, caN, certN, keyN)
+}
 
 // Disconnect tears the tunnel down (idempotent: a no-op when disconnected).
 func (a *App) Disconnect() error { return a.cl.Disconnect() }
@@ -312,6 +360,10 @@ func (a *App) importBundleData(data []byte, sourceName string) (ProfileInfo, err
 	// carries the identity and server address, not those — so an import doesn't
 	// silently wipe a customised MTU.
 	a.form = ConnectForm{Server: p.Server, ServerName: p.ServerName, MTU: a.form.MTU, TunName: a.form.TunName}
+	// A re-import replaces the address list, so a remembered endpoint from the
+	// previous profile must not survive into it: it may name an address this
+	// profile has never heard of.
+	a.endpoints, a.lastEndpoint = p.Endpoints, ""
 	a.lastCN = p.CommonName
 	info := a.profileInfoLocked()
 	form := a.form
@@ -371,8 +423,12 @@ func (a *App) save(form ConnectForm, ca, cert, key []byte, caN, certN, keyN stri
 	if a.store == nil {
 		return
 	}
+	a.mu.Lock()
+	endpoints, lastEndpoint := a.endpoints, a.lastEndpoint
+	a.mu.Unlock()
 	err := a.store.Save(profilestore.Profile{
 		Server: form.Server, ServerName: form.ServerName, MTU: form.MTU, TunName: form.TunName,
+		Endpoints: endpoints, LastEndpoint: lastEndpoint,
 		CACertPEM: ca, CertPEM: cert, KeyPEM: key,
 		CAName: caN, CertName: certN, KeyName: keyN,
 	})
@@ -390,13 +446,15 @@ func (a *App) draftCreds() control.Credentials {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return control.Credentials{
-		Server:     a.form.Server,
-		ServerName: a.form.ServerName,
-		CACertPEM:  a.caPEM,
-		CertPEM:    a.certPEM,
-		KeyPEM:     a.keyPEM,
-		MTU:        a.form.MTU,
-		TunName:    a.form.TunName,
+		Server:            a.form.Server,
+		ServerName:        a.form.ServerName,
+		Endpoints:         a.endpoints,
+		PreferredEndpoint: a.lastEndpoint,
+		CACertPEM:         a.caPEM,
+		CertPEM:           a.certPEM,
+		KeyPEM:            a.keyPEM,
+		MTU:               a.form.MTU,
+		TunName:           a.form.TunName,
 	}
 }
 

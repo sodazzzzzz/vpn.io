@@ -17,6 +17,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/govpn/internal/profile"
 )
 
 // appDir is the per-user subdirectory under os.UserConfigDir() (e.g.
@@ -40,8 +42,17 @@ const maxProfileBytes = 256 << 10
 type Profile struct {
 	Server     string `json:"server"`
 	ServerName string `json:"serverName,omitempty"`
-	MTU        int    `json:"mtu,omitempty"`
-	TunName    string `json:"tunName,omitempty"`
+	// Endpoints are every address the imported profile knows for the same node.
+	// Empty for a profile imported before endpoint lists existed, or entered by
+	// hand — Server is then the only address.
+	Endpoints []profile.Endpoint `json:"endpoints,omitempty"`
+	// LastEndpoint is the address that last produced a working session. It is
+	// kept HERE and not in the .vpnio file on purpose: it is local knowledge
+	// about this machine's network, not part of the credential anyone hands
+	// out, and copying a profile between machines should not carry it along.
+	LastEndpoint string `json:"lastEndpoint,omitempty"`
+	MTU          int    `json:"mtu,omitempty"`
+	TunName      string `json:"tunName,omitempty"`
 
 	CACertPEM []byte `json:"caCertPem"`
 	CertPEM   []byte `json:"certPem"`
