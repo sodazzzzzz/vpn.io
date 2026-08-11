@@ -213,6 +213,58 @@ ssh -N -L 9443:127.0.0.1:9443 root@your-vps    # then curl localhost:9443/readyz
   firewall, or the connect address doesn't match the server certificate's
   `-hosts` SAN.
 
+## Changing a node's address
+
+A profile points at an address, so moving the node to a new IP or name is the
+one operation that can lock everyone out at once — the July move happened
+exactly this way: the VPS died with its lease and every profile pointed at an
+address that no longer answered.
+
+What makes it survivable is that a profile can carry **several addresses for the
+same node**, and the client walks them: nothing is pinned to one IP.
+
+### Before you need it
+
+Hand out profiles that already list a spare address, and the move costs nobody
+anything:
+
+```bash
+vpn-ca export-profile -name alice \
+    -server vpn.example.com:8443 \
+    -also "203.0.113.5:8443=direct ip"
+```
+
+A name plus its current IP is the cheapest pair: if DNS is what breaks, the IP
+still works; if the IP changes, the name still resolves. Note that a
+multi-address profile needs an app new enough to read it — single-address
+profiles stay readable by every released version, which is why `export-profile`
+only writes the newer format when you actually ask for more than one address.
+
+### The move itself
+
+1. **Bring the new node up in parallel.** Issue a server certificate whose
+   `-hosts` covers **both** the old and the new address, and install it on both
+   machines. One certificate valid for both means clients verify either one
+   without a profile change.
+2. **Keep the old node serving.** This is the whole trick: overlap, do not cut
+   over. A client that reconnects during the window lands on whichever answers.
+3. **Point the name at the new address**, if the profiles use a name. Most
+   clients follow within a DNS TTL and never notice anything happened.
+4. **Watch who is left.** `curl -s localhost:9443/readyz` on the old node
+   reports its session count; when it stays at zero for a day or two, the
+   stragglers have moved.
+5. **Retire the old node.**
+
+### For people whose profile does not list the new address
+
+There is no way around handing them a new file: the address has to reach them
+somehow, and the server has no channel to a client that cannot connect to it.
+Re-invite them through the bot (`/invite <name>`), which mints a replacement
+profile and revokes the old one, or export and send the file yourself.
+
+Plan for this **before** step 5 — once the old address stops answering, anyone
+still on it is offline until that file arrives.
+
 ## Decommissioning a node
 
 One command, on the node:
@@ -232,10 +284,9 @@ may have been copied, treat it as compromised (see
 [SECURITY-KEYS.md](SECURITY-KEYS.md)) and issue a new one for the replacement
 rather than moving the old pair over.
 
-If the node is being replaced rather than retired, the thing that actually needs
-planning is the address in people's profiles: a profile points at a host:port,
-so a new machine at a new address means every profile has to learn about it.
-Keep the old node serving until they have.
+If the node is being replaced rather than retired, do the address work first —
+see [Changing a node's address](#changing-a-nodes-address) above — and retire
+this machine only once nobody is left on it.
 
 ## Updating
 
