@@ -14,6 +14,30 @@ service. Three machines, each with different access to secrets:
 The CA private key (`ca.key`) stays on the trusted host and is **never** copied
 to the VPS, so a compromised VPS cannot issue new client certificates.
 
+## Fast path: provision a fresh VPS
+
+`packaging/server/provision.sh` does everything on this page that can be done on
+the VPS itself — packages, the signed release binary, forwarding, NAT, the unit,
+the firewall rule — and stops at the one step it must not do:
+
+```bash
+sudo bash provision.sh --server vpn.example.com:8443
+```
+
+It is **idempotent**: re-running never overwrites a tuned `server.env`, never
+restarts a healthy node for no reason, and skips anything already in place. Use
+it to rebuild a node, to move to a new machine, or to check a machine still
+matches what it should be (`--dry-run` prints the diff without touching
+anything).
+
+What it will not do is put certificates on the box — `ca.key` never leaves the
+CA host, so the last step is yours, and the script finishes by printing the
+exact commands for it. A node without certificates does not start, which is the
+correct failure.
+
+The manual walkthrough below is still the reference: read it once so you know
+what the script did.
+
 ## 1. On the CA host (once)
 
 ```bash
@@ -129,6 +153,56 @@ the client's *current* certificate only, and never resurrects a replaced one.
 
 ---
 
+## Is it healthy?
+
+`vpn-server` serves two endpoints on `127.0.0.1:9443` (change with
+`-health-listen`, empty disables them):
+
+```bash
+curl -s localhost:9443/healthz | jq   # liveness: should this be restarted?
+curl -s localhost:9443/readyz  | jq   # readiness: would a client get a tunnel?
+```
+
+Both return the same JSON and differ only in which field sets the status code —
+`200` for yes, `503` for no — so a probe can use either without parsing it.
+
+The distinction matters: a node whose certificate expired last night is running
+perfectly and serving nobody. `/healthz` stays `200` (a restart fixes nothing),
+`/readyz` turns `503` and says why in plain words:
+
+```json
+{
+  "live": true,
+  "ready": false,
+  "notReady": ["server certificate expired on 2026-08-01 — clients cannot verify this node"],
+  "listen": "[::]:8443",
+  "tun": "tun0",
+  "sessions": 0,
+  "certNotAfter": "2026-08-01T10:00:00Z",
+  "certExpiresInDays": -8
+}
+```
+
+Readiness turns `503` when the server certificate is expired or not yet valid,
+or when the revocation list cannot be read — the handshake fails closed on a
+broken deny-list, so an unparsable file rejects **every** client. Three weeks
+before the certificate runs out a `warnings` entry appears while readiness stays
+`200`: still serving, but rotate it.
+
+On an **existing** install, `install.sh` leaves your `server.env` untouched, so
+`VPN_HEALTH_LISTEN` is not set and the unit passes `-health-listen=` — the
+endpoints stay off until you add the line from `server.env.example` and restart.
+
+**Keep it on loopback.** Session counts and certificate dates are metadata about
+the people using the node; there is no authentication on these endpoints. Reach
+them over SSH if you need them from elsewhere:
+
+```bash
+ssh -N -L 9443:127.0.0.1:9443 root@your-vps    # then curl localhost:9443/readyz
+```
+
+---
+
 ## Troubleshooting
 
 - **Service won't start** → `journalctl -u vpn-server -e`. "interface not found"
@@ -190,6 +264,29 @@ profile and revokes the old one, or export and send the file yourself.
 
 Plan for this **before** step 5 — once the old address stops answering, anyone
 still on it is offline until that file arrives.
+
+## Decommissioning a node
+
+One command, on the node:
+
+```bash
+sudo packaging/server/uninstall.sh
+```
+
+It stops and unregisters the service and the update timer, reverts the NAT rule
+before deleting the helper that knows how, and removes the binaries — leaving
+`/etc/vpn-server` (config and certificates) for you to inspect or purge.
+
+On the CA host, nothing needs revoking: client certificates are bound to the
+**CA**, not to a node, so they keep working against whichever node you point
+people at next. The server certificate belongs to the retired machine — if it
+may have been copied, treat it as compromised (see
+[SECURITY-KEYS.md](SECURITY-KEYS.md)) and issue a new one for the replacement
+rather than moving the old pair over.
+
+If the node is being replaced rather than retired, do the address work first —
+see [Changing a node's address](#changing-a-nodes-address) above — and retire
+this machine only once nobody is left on it.
 
 ## Updating
 
