@@ -82,7 +82,7 @@ func TestReadIdleTimeout_FollowsServerKeepalive(t *testing.T) {
 // pin the address we're about to dial (#126).
 func TestResolveServer_IPLiteralNeedsNoDNS(t *testing.T) {
 	c := &Client{cfg: Config{Server: "203.0.113.5:8443"}}
-	ip, port, err := c.resolveServer(context.Background())
+	ip, port, err := c.resolveServer(context.Background(), c.cfg.Server)
 	if err != nil {
 		t.Fatalf("resolveServer: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestResolveServer_IPLiteralNeedsNoDNS(t *testing.T) {
 // An address with no port is rejected before any lookup.
 func TestResolveServer_BadAddressErrors(t *testing.T) {
 	c := &Client{cfg: Config{Server: "missing-port"}}
-	if _, _, err := c.resolveServer(context.Background()); err == nil {
+	if _, _, err := c.resolveServer(context.Background(), c.cfg.Server); err == nil {
 		t.Fatal("want an error for an address without a port")
 	}
 }

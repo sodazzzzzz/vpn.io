@@ -61,7 +61,21 @@ const writeTimeout = 30 * time.Second
 // Required: Server, CACertFile, CertFile, KeyFile. Everything else has a
 // sane default applied by New if left zero.
 type Config struct {
-	Server     string // "vpn.example.com:8443"
+	Server string // "vpn.example.com:8443"
+
+	// Endpoints lists every address of the SAME node, in the order to try
+	// them. Empty means "just Server". When set, Server/ServerName are filled
+	// in from the first entry.
+	Endpoints []Endpoint
+
+	// PreferredEndpoint is the address that worked last time, if the caller
+	// remembered one. The ring starts there instead of at the top of the list.
+	PreferredEndpoint string
+
+	// OnEndpoint, if set, is called with the endpoint that just produced a
+	// working session — the hook a front-end uses to persist it. It runs on the
+	// client's own goroutine, so it must not block.
+	OnEndpoint func(Endpoint)
 	CACertFile string // ca.crt
 	CertFile   string // client.crt
 	KeyFile    string // client.key
@@ -126,6 +140,8 @@ type Client struct {
 	dev       tun.Device
 	log       *slog.Logger
 	tlsConfig *tls.Config
+	// ring walks the profile's endpoints; see endpoints.go.
+	ring *endpointRing
 
 	mu             sync.Mutex
 	configuredIP   string            // empty until first AssignIP triggers tun.Configure
@@ -145,9 +161,13 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 	if dev == nil {
 		return nil, fmt.Errorf("client: nil TUN device")
 	}
-	if cfg.Server == "" {
-		return nil, fmt.Errorf("client: empty Server")
+	endpoints, err := normalizeEndpoints(cfg.Endpoints, cfg.Server, cfg.ServerName)
+	if err != nil {
+		return nil, err
 	}
+	// Server/ServerName keep naming the primary endpoint: they are what every
+	// caller that only knows about one address still reads.
+	cfg.Server, cfg.ServerName = endpoints[0].Server, endpoints[0].ServerName
 	// Credentials come either fully in-memory (PEM) or fully from files.
 	nPEM := btoi(len(cfg.CACertPEM) > 0) + btoi(len(cfg.CertPEM) > 0) + btoi(len(cfg.KeyPEM) > 0)
 	inlineCreds := nPEM > 0
@@ -169,18 +189,7 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 	if cfg.HandshakeTimeout <= 0 {
 		cfg.HandshakeTimeout = 10 * time.Second
 	}
-	if cfg.ServerName == "" {
-		host, _, err := net.SplitHostPort(cfg.Server)
-		if err != nil || host == "" {
-			return nil, fmt.Errorf("client: cannot derive ServerName from Server=%q: %w", cfg.Server, err)
-		}
-		cfg.ServerName = host
-	}
-
-	var (
-		tlsCfg *tls.Config
-		err    error
-	)
+	var tlsCfg *tls.Config
 	if inlineCreds {
 		tlsCfg, err = tlsConfigFromPEM(cfg.CACertPEM, cfg.CertPEM, cfg.KeyPEM, cfg.ServerName)
 	} else {
@@ -197,7 +206,13 @@ func New(cfg Config, dev tun.Device, log *slog.Logger) (*Client, error) {
 	// reference remains; this just stops Client from being one such reference.
 	cfg.CACertPEM, cfg.CertPEM, cfg.KeyPEM = nil, nil, nil
 
-	return &Client{cfg: cfg, dev: dev, log: log, tlsConfig: tlsCfg}, nil
+	return &Client{
+		cfg:       cfg,
+		dev:       dev,
+		log:       log,
+		tlsConfig: tlsCfg,
+		ring:      newEndpointRing(endpoints, cfg.PreferredEndpoint),
+	}, nil
 }
 
 // btoi returns 1 for true and 0 for false.
@@ -301,12 +316,13 @@ func (c *Client) runDevicePoller(ctx context.Context, outbound chan<- []byte) {
 // (wrapping one of the sentinels) if the failure shouldn't be retried.
 // Otherwise returns a retryable error.
 func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error {
+	ep := c.ring.current()
 	// Resolve the server ourselves so we can pin the exact address we dial. A
 	// server behind DNS (DDNS / failover / round-robin) can move between
 	// reconnects; letting the dialer resolve would connect to the new IP while
 	// the pin-hole and kill-switch still allow only the old one, black-holing
 	// the dial (#126).
-	serverIP, port, err := c.resolveServer(ctx)
+	serverIP, port, err := c.resolveServer(ctx, ep.Server)
 	if err != nil {
 		return err // retryable: DNS may recover
 	}
@@ -315,7 +331,16 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 	// change (Wi-Fi drop/rejoin) that may have flushed the pin-hole.
 	c.preparePath(serverIP)
 
-	dialer := &tls.Dialer{Config: c.tlsConfig}
+	// Verify against THIS endpoint's name. The credentials are shared across
+	// endpoints, but the name each one presents need not be — so the config is
+	// cloned per attempt rather than mutated, which would race with an
+	// in-flight handshake.
+	tlsCfg := c.tlsConfig
+	if ep.ServerName != tlsCfg.ServerName {
+		tlsCfg = tlsCfg.Clone()
+		tlsCfg.ServerName = ep.ServerName
+	}
+	dialer := &tls.Dialer{Config: tlsCfg}
 	// Dial the resolved IP, not the hostname: tlsConfig.ServerName still carries
 	// the hostname, so SNI and certificate verification are unchanged.
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(serverIP.String(), port))
@@ -384,8 +409,16 @@ func (c *Client) connectOnce(ctx context.Context, outbound <-chan []byte) error 
 		}
 	}
 
+	// This endpoint works: start here next time, and let the front-end persist
+	// it. Done before the tunnel is configured so a later failure in TUN setup
+	// does not lose the one piece of knowledge this attempt produced.
+	c.ring.succeeded()
+	if c.cfg.OnEndpoint != nil {
+		c.cfg.OnEndpoint(ep)
+	}
+
 	c.log.Info("connected",
-		"server", c.cfg.Server,
+		"server", ep.Server,
 		"assigned", assign.IP,
 		"gateway", assign.Gateway,
 		"mtu", assign.MTU,
@@ -494,10 +527,10 @@ func (c *Client) ensureRoutes(a tunnel.AssignIP, remote net.Addr) error {
 // is returned as-is. We resolve here — rather than let the dialer do it — so the
 // address we pin is exactly the address we dial (#126). IPv4 is preferred: the
 // data plane is IPv4-only.
-func (c *Client) resolveServer(ctx context.Context) (netip.Addr, string, error) {
-	host, port, err := net.SplitHostPort(c.cfg.Server)
+func (c *Client) resolveServer(ctx context.Context, server string) (netip.Addr, string, error) {
+	host, port, err := net.SplitHostPort(server)
 	if err != nil {
-		return netip.Addr{}, "", fmt.Errorf("client: bad server address %q: %w", c.cfg.Server, err)
+		return netip.Addr{}, "", fmt.Errorf("client: bad server address %q: %w", server, err)
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
 		return ip.Unmap(), port, nil
