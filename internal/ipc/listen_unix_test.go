@@ -186,3 +186,47 @@ func TestListenRefusesNonSocketPath(t *testing.T) {
 		t.Fatal("expected Listen to refuse overwriting a regular file")
 	}
 }
+
+// TestCheckSocketDirAttrs walks the owner × permission matrix directly. The
+// root-owned rows are the reason this helper exists: macOS ships /var/run as
+// root:daemon 0775, so a test that has to chown a real directory to root could
+// never cover the mode the helper actually runs in.
+func TestCheckSocketDirAttrs(t *testing.T) {
+	const root, other = 0, 4242
+	self := uint32(os.Geteuid())
+
+	cases := []struct {
+		name string
+		uid  uint32
+		mode os.FileMode
+		ok   bool
+	}{
+		{"root 0755", root, 0o755, true},
+		// The shape macOS gives /var/run: root-owned and group-writable by a
+		// group only root can join.
+		{"root 0775", root, 0o775, true},
+		{"root 0777", root, 0o777, false},
+		{"root 0777 sticky", root, 0o777 | os.ModeSticky, true},
+		{"self 0700", self, 0o700, true},
+		{"self 0770", self, 0o770, false},
+		{"self 0707", self, 0o707, false},
+		{"self 0777 sticky", self, 0o777 | os.ModeSticky, true},
+		{"foreign owner 0700", other, 0o700, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Running as root collapses the "self" rows onto the root ones, where
+			// group-write is deliberately allowed — those rows say nothing then.
+			if self == 0 && tc.uid == self && !tc.ok {
+				t.Skip("running as root: the self rows duplicate the root ones")
+			}
+			err := checkSocketDirAttrs("/dir", tc.uid, tc.mode)
+			if tc.ok && err != nil {
+				t.Fatalf("uid=%d mode=%v must be safe: %v", tc.uid, tc.mode, err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("uid=%d mode=%v must be rejected", tc.uid, tc.mode)
+			}
+		})
+	}
+}
