@@ -166,22 +166,42 @@ func (d *darwinRunner) listEnabledServices() ([]string, error) {
 	return svcs, nil
 }
 
-// getV6Mode parses the "IPv6:" line of `networksetup -getv6settings <svc>`.
-// -getv6settings returns only the IPv6 configuration (mode on the first
-// line), which is more stable than -getinfo's combined dump.
+// getV6Mode reports a service's IPv6 configuration mode ("Automatic", "Off",
+// "Link-local", "Manual") as read from `networksetup -getinfo <svc>`.
+//
+// -getinfo is the only networksetup verb that reports the mode: the read-side
+// counterpart to -setv6off/-setv6automatic simply doesn't exist. Asking for one
+// costs an exit status 5 and a usage dump, which aborted Enable on the first
+// service and left IPv6 up on every interface while the UI said "connected".
 func (d *darwinRunner) getV6Mode(svc string) (string, error) {
-	out, err := execx.Output("networksetup", "-getv6settings", svc)
+	out, err := execx.Output("networksetup", "-getinfo", svc)
 	if err != nil {
 		return "", err
 	}
+	mode, err := parseV6Mode(out)
+	if err != nil {
+		return "", fmt.Errorf("%w for %q", err, svc)
+	}
+	return mode, nil
+}
+
+// parseV6Mode picks the mode out of a -getinfo dump. The dump mixes IPv4 and
+// IPv6 lines, several of which start with "IPv6" ("IPv6 IP address:", "IPv6
+// Router:"); only the bare "IPv6:" line carries the mode, so the colon is part
+// of the prefix we match.
+func parseV6Mode(out []byte) (string, error) {
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if v, ok := strings.CutPrefix(line, "IPv6:"); ok {
-			return strings.TrimSpace(v), nil
+			mode := strings.TrimSpace(v)
+			if mode == "" {
+				return "", fmt.Errorf("empty IPv6 mode in networksetup -getinfo output")
+			}
+			return mode, nil
 		}
 	}
-	return "", fmt.Errorf("no IPv6 line in getv6settings output for %q", svc)
+	return "", fmt.Errorf("no IPv6 line in networksetup -getinfo output")
 }
 
 func (d *darwinRunner) setV6(svc, flag string) error {
