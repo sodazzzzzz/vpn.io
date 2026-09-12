@@ -118,7 +118,7 @@ func checkSocketDirAttrs(dir string, uid, gid uint32, mode os.FileMode) error {
 	}
 	// See the doc comment: the group bit is safe only when both the owner and
 	// the group are root's alone.
-	if perm&0o020 != 0 && !(uid == 0 && rootOnlyGroups[gid]) {
+	if perm&0o020 != 0 && (uid != 0 || !rootOnlyGroups[gid]) {
 		return fmt.Errorf("ipc: refusing group-writable socket dir %q (gid %d); use a directory writable only by its owner (or sticky)", dir, gid)
 	}
 	return nil
