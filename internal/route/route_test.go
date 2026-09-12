@@ -453,3 +453,39 @@ func TestPinServer_SameIPJustRefreshes(t *testing.T) {
 		t.Errorf("want exactly one re-add of the pin-hole, got %d", adds)
 	}
 }
+
+// TestRefreshServerPinholeMarksLostRoute pins down the difference between the
+// two refresh failures. A gateway query that fails is a skip: the old pin-hole
+// is untouched. An AddRoute that fails after the delete went through leaves no
+// pin-hole in the kernel at all, and must say so via ErrPinholeLost so the
+// caller can log it loudly instead of as a routine skip.
+func TestRefreshServerPinholeMarksLostRoute(t *testing.T) {
+	r := &mockRunner{defaultGW: netip.MustParseAddr("192.168.1.1")}
+	m := newWithRunner(discard(), "utun4",
+		netip.MustParseAddr("10.8.0.1"),
+		netip.MustParseAddr("203.0.113.5"),
+		r,
+	)
+	if err := m.Install([]string{"0.0.0.0/0"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	r.defaultGW = netip.MustParseAddr("192.168.2.1")
+	r.addErr = errors.New("network is unreachable")
+	err := m.RefreshServerPinhole()
+	if !errors.Is(err, ErrPinholeLost) {
+		t.Fatalf("AddRoute failure must report ErrPinholeLost, got %v", err)
+	}
+
+	// A gateway query that fails happens before anything is removed, so the
+	// existing pin-hole still stands — that is a skip, not a loss.
+	r.addErr = nil
+	r.defaultGWErr = errors.New("no default route")
+	err = m.RefreshServerPinhole()
+	if err == nil {
+		t.Fatal("gateway failure must be reported")
+	}
+	if errors.Is(err, ErrPinholeLost) {
+		t.Fatalf("a skipped refresh must not claim the pin-hole was lost: %v", err)
+	}
+}

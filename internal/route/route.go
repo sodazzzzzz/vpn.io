@@ -21,6 +21,7 @@
 package route
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -159,6 +160,11 @@ func (m *Manager) Remove() {
 	m.rollback()
 }
 
+// ErrPinholeLost marks the one refresh failure that leaves the system worse
+// than before: the stale pin-hole was removed but the new one could not be
+// added, so there is now no host route to the server at all.
+var ErrPinholeLost = errors.New("route: server pin-hole lost")
+
 // RefreshServerPinhole re-pins the host route to the VPN server through the
 // gateway that is the default *now*. The pin-hole is installed once at Install
 // time via whatever gateway existed then; a network change (e.g. Wi-Fi drop
@@ -198,7 +204,12 @@ func (m *Manager) RefreshServerPinhole() error {
 		}
 	}
 	if err := m.runner.AddRoute(pinhole, gw, ""); err != nil {
-		return fmt.Errorf("route: refresh pin-hole %s via %s: %w", pinhole, gw, err)
+		// The old pin-hole was just deleted, so this leaves the route MISSING
+		// from the kernel rather than merely unrefreshed: the dial that follows
+		// falls under the tunnel split-routes and black-holes. Marked so the
+		// caller can tell it apart from the expected skips (no gateway yet,
+		// gateway is the tunnel) and log it loudly.
+		return fmt.Errorf("%w: %s via %s: %v", ErrPinholeLost, pinhole, gw, err)
 	}
 	m.pinholeGW = gw
 
