@@ -37,6 +37,11 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 	attempt := 0
 	suspectedAuth := 0
 	for {
+		// The poller may have died while we were backing off — reconnecting
+		// would produce a tunnel that carries nothing outbound.
+		if err := c.deviceDied(); err != nil {
+			return err
+		}
 		c.emitState(StateConnecting)
 		started := time.Now()
 		err := c.connectOnce(ctx, outbound)
@@ -106,10 +111,31 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 		select {
 		case <-ctx.Done():
 			return nil
+		case derr := <-c.devDead:
+			return c.deviceGone(derr)
 		case <-time.After(d):
 		}
 		attempt++
 	}
+}
+
+// deviceDied reports the TUN poller's exit reason, if it has one. The device
+// belongs to the caller and the poller is never restarted, so this is fatal:
+// retrying would only rebuild a tunnel with a dead outbound side.
+func (c *Client) deviceDied() error {
+	select {
+	case derr := <-c.devDead:
+		return c.deviceGone(derr)
+	default:
+		return nil
+	}
+}
+
+// deviceGone is the single place that turns a dead TUN device into the error
+// every caller returns, so the message and the fatal wrapper can't drift apart.
+func (c *Client) deviceGone(cause error) error {
+	c.log.Error("TUN device is gone; not reconnecting", "err", cause)
+	return fmt.Errorf("%w: TUN device read: %v", ErrFatalConfig, cause)
 }
 
 // backoff returns the wait before attempt N: min*2^attempt + jitter,

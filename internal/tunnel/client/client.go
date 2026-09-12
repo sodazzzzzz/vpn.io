@@ -143,6 +143,11 @@ type Client struct {
 	// ring walks the profile's endpoints; see endpoints.go.
 	ring *endpointRing
 
+	// devDead carries the TUN poller's exit reason. The poller outlives any
+	// single session, so when it dies the reconnect loop must hear about it —
+	// see runDevicePoller. Buffered so the poller never blocks on the send.
+	devDead chan error
+
 	mu             sync.Mutex
 	configuredIP   string            // empty until first AssignIP triggers tun.Configure
 	routes         *route.Manager    // non-nil after first successful Install
@@ -243,6 +248,7 @@ func (c *Client) emitState(s State) {
 func (c *Client) Run(ctx context.Context) error {
 	outbound := make(chan []byte, outboundBufferDepth)
 
+	c.devDead = make(chan error, 1)
 	go c.runDevicePoller(ctx, outbound)
 
 	err := c.runReconnectLoop(ctx, outbound)
@@ -274,13 +280,31 @@ func (c *Client) Run(ctx context.Context) error {
 // runDevicePoller drains dev.Read into outbound. Exits when dev.Read
 // returns an error (typically because the caller closed the device after
 // Run returned).
+//
+// The poller is the only part of the data plane that outlives a session: one
+// goroutine feeds every reconnect. A dev.Read error therefore kills the
+// machine's outbound traffic for good — the TLS side keeps reconnecting, the
+// server keeps sending keepalives so the read-idle deadline never trips, and
+// the UI keeps saying "connected" while nothing leaves the host. It used to
+// exit on a Debug line nobody sees; now it reports the reason on c.devDead so
+// the reconnect loop can end the session with a real error.
 func (c *Client) runDevicePoller(ctx context.Context, outbound chan<- []byte) {
 	buf := make([]byte, c.dev.MTU()+64) // +64 for any overhead/safety
 
 	for {
 		n, err := c.dev.Read(buf)
 		if err != nil {
-			c.log.Debug("device poller exiting", "err", err)
+			// A cancelled ctx means the caller is closing the device on the way
+			// out: the expected exit, not a failure.
+			if ctx.Err() != nil {
+				c.log.Debug("device poller exiting", "err", err)
+				return
+			}
+			c.log.Error("TUN device read failed; outbound traffic has stopped", "err", err)
+			select {
+			case c.devDead <- err:
+			default: // already reported
+			}
 			return
 		}
 		if n == 0 {
@@ -568,7 +592,18 @@ func (c *Client) preparePath(serverIP netip.Addr) {
 
 	if c.routes != nil {
 		if err := c.routes.PinServer(serverIP); err != nil {
-			c.log.Debug("server pin-hole prepare skipped", "err", err)
+			// Two very different outcomes share this path. The expected one is a
+			// skip (no default gateway yet, or it resolves to the tunnel): the
+			// old pin-hole stands and the next attempt retries. The other is
+			// ErrPinholeLost — the route is now gone from the kernel and every
+			// dial black-holes until a later refresh succeeds. Don't bury that
+			// one in Debug: an operator reading the log at info level would see
+			// nothing at all while the client reconnects forever.
+			if errors.Is(err, route.ErrPinholeLost) {
+				c.log.Warn("server pin-hole could not be re-established; reconnects will fail until the route is back", "err", err)
+			} else {
+				c.log.Debug("server pin-hole prepare skipped", "err", err)
+			}
 		}
 	}
 
@@ -787,11 +822,14 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 		}()
 	}
 
-	// Wait for the first event: either a goroutine returns an error, or
-	// the parent ctx is cancelled (clean shutdown).
+	// Wait for the first event: a goroutine returns an error, the TUN poller
+	// dies (no outbound traffic can flow any more, so the session is pointless),
+	// or the parent ctx is cancelled (clean shutdown).
 	var firstErr error
 	select {
 	case firstErr = <-errCh:
+	case derr := <-c.devDead:
+		firstErr = c.deviceGone(derr)
 	case <-ctx.Done():
 		firstErr = nil
 	}
