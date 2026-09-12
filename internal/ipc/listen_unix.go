@@ -21,9 +21,11 @@ import (
 // is created with the given file mode — filesystem permissions are a first
 // gate, and the peer-credential check is the authority on top of it.
 //
-// A custom socket path must sit in a directory only its owner can write to: the
-// directory must be owned by root or the current user and not writable by anyone
-// else. Otherwise Listen refuses — see checkSocketDirSafe.
+// A custom socket path must sit in a directory no unprivileged user can write
+// to: the directory must be owned by root or the current user, and writable by
+// others only where that write access is root-granted (a root-owned dir's group)
+// or neutered by the sticky bit. Otherwise Listen refuses — see
+// checkSocketDirSafe.
 func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net.Listener, error) {
 	if log == nil {
 		log = slog.Default()
@@ -65,11 +67,21 @@ func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net
 
 // checkSocketDirSafe ensures the socket directory can't be used by another user
 // to swap in a rogue socket. A directory is safe when it is owned by root or the
-// current user and writable by no one but its owner. A group- or world-writable
-// directory without the sticky bit (e.g. "mkdir -m 0777", or a 0770 dir with an
-// untrusted group) opens a TOCTOU window during the stale-socket auto-removal and
-// is rejected. The default /var/run (root, 0755), a private user directory
-// (0700), and sticky dirs like /tmp all pass.
+// current user and no unprivileged user can write to it. A world-writable
+// directory without the sticky bit (e.g. "mkdir -m 0777") opens a TOCTOU window
+// during the stale-socket auto-removal and is rejected; so is a group-writable
+// directory of our own (a 0770 dir with an untrusted group).
+//
+// Group-write is accepted only on a root-owned directory whose group is itself
+// root-only — wheel (gid 0) or daemon (gid 1). Nobody but root is in those, so
+// the bit grants no write access an unprivileged user could use. It is not
+// enough that the OWNER is root: a root-owned directory can carry a group that
+// ordinary users are in (staff, admin), and there the bit is a real TOCTOU
+// window. This exception is not academic — macOS ships /var/run as root:daemon
+// 0775, and that is exactly where the helper puts its control socket, so
+// rejecting it kept the daemon from ever starting.
+//
+// A private user directory (0700) and sticky dirs like /tmp pass as before.
 func checkSocketDirSafe(dir string) error {
 	fi, err := os.Stat(dir)
 	if err != nil {
@@ -79,13 +91,35 @@ func checkSocketDirSafe(dir string) error {
 	if !ok {
 		return fmt.Errorf("ipc: cannot inspect ownership of socket dir %q", dir)
 	}
+	return checkSocketDirAttrs(dir, st.Uid, st.Gid, fi.Mode())
+}
+
+// rootOnlyGroups are the groups no unprivileged user belongs to: wheel (0) and
+// daemon (1) on macOS and the BSDs, root (0) on Linux. Group-write is tolerated
+// only for these — see checkSocketDirSafe.
+var rootOnlyGroups = map[uint32]bool{0: true, 1: true}
+
+// checkSocketDirAttrs holds the decision itself, split out from the stat so the
+// matrix (owner × permission bits) is testable without creating directories the
+// test process has no right to own.
+func checkSocketDirAttrs(dir string, uid, gid uint32, mode os.FileMode) error {
 	// A foreign owner could swap both the directory and the socket inside it.
-	if st.Uid != 0 && st.Uid != uint32(os.Geteuid()) {
-		return fmt.Errorf("ipc: socket dir %q is owned by uid %d, expected root or self; use a root-only directory", dir, st.Uid)
+	if uid != 0 && uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("ipc: socket dir %q is owned by uid %d, expected root or self; use a root-only directory", dir, uid)
 	}
-	// Group- or world-write without sticky lets someone else replace the socket.
-	if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&os.ModeSticky == 0 {
-		return fmt.Errorf("ipc: refusing group/world-writable socket dir %q; use a directory writable only by its owner (or sticky)", dir)
+	// The sticky bit stops anyone from touching a file they don't own, so it
+	// makes the write bits below harmless.
+	if mode&os.ModeSticky != 0 {
+		return nil
+	}
+	perm := mode.Perm()
+	if perm&0o002 != 0 {
+		return fmt.Errorf("ipc: refusing world-writable socket dir %q; use a directory writable only by its owner (or sticky)", dir)
+	}
+	// See the doc comment: the group bit is safe only when both the owner and
+	// the group are root's alone.
+	if perm&0o020 != 0 && (uid != 0 || !rootOnlyGroups[gid]) {
+		return fmt.Errorf("ipc: refusing group-writable socket dir %q (gid %d); use a directory writable only by its owner (or sticky)", dir, gid)
 	}
 	return nil
 }
