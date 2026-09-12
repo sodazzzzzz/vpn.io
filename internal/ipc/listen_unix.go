@@ -72,11 +72,14 @@ func Listen(path string, mode os.FileMode, policy Policy, log *slog.Logger) (net
 // during the stale-socket auto-removal and is rejected; so is a group-writable
 // directory of our own (a 0770 dir with an untrusted group).
 //
-// Group-write on a ROOT-owned directory is accepted: membership in the group of
-// a root-owned system directory is itself granted by root, so it confers no
-// write access an unprivileged user could have. This is not a corner case —
-// macOS ships /var/run as root:daemon 0775, and that is exactly where the helper
-// puts its control socket, so rejecting it kept the daemon from ever starting.
+// Group-write is accepted only on a root-owned directory whose group is itself
+// root-only — wheel (gid 0) or daemon (gid 1). Nobody but root is in those, so
+// the bit grants no write access an unprivileged user could use. It is not
+// enough that the OWNER is root: a root-owned directory can carry a group that
+// ordinary users are in (staff, admin), and there the bit is a real TOCTOU
+// window. This exception is not academic — macOS ships /var/run as root:daemon
+// 0775, and that is exactly where the helper puts its control socket, so
+// rejecting it kept the daemon from ever starting.
 //
 // A private user directory (0700) and sticky dirs like /tmp pass as before.
 func checkSocketDirSafe(dir string) error {
@@ -88,13 +91,18 @@ func checkSocketDirSafe(dir string) error {
 	if !ok {
 		return fmt.Errorf("ipc: cannot inspect ownership of socket dir %q", dir)
 	}
-	return checkSocketDirAttrs(dir, st.Uid, fi.Mode())
+	return checkSocketDirAttrs(dir, st.Uid, st.Gid, fi.Mode())
 }
+
+// rootOnlyGroups are the groups no unprivileged user belongs to: wheel (0) and
+// daemon (1) on macOS and the BSDs, root (0) on Linux. Group-write is tolerated
+// only for these — see checkSocketDirSafe.
+var rootOnlyGroups = map[uint32]bool{0: true, 1: true}
 
 // checkSocketDirAttrs holds the decision itself, split out from the stat so the
 // matrix (owner × permission bits) is testable without creating directories the
 // test process has no right to own.
-func checkSocketDirAttrs(dir string, uid uint32, mode os.FileMode) error {
+func checkSocketDirAttrs(dir string, uid, gid uint32, mode os.FileMode) error {
 	// A foreign owner could swap both the directory and the socket inside it.
 	if uid != 0 && uid != uint32(os.Geteuid()) {
 		return fmt.Errorf("ipc: socket dir %q is owned by uid %d, expected root or self; use a root-only directory", dir, uid)
@@ -108,10 +116,10 @@ func checkSocketDirAttrs(dir string, uid uint32, mode os.FileMode) error {
 	if perm&0o002 != 0 {
 		return fmt.Errorf("ipc: refusing world-writable socket dir %q; use a directory writable only by its owner (or sticky)", dir)
 	}
-	// Only a non-root owner makes the group meaningful here — see the root-owned
-	// exception in the doc comment above.
-	if perm&0o020 != 0 && uid != 0 {
-		return fmt.Errorf("ipc: refusing group-writable socket dir %q; use a directory writable only by its owner (or sticky)", dir)
+	// See the doc comment: the group bit is safe only when both the owner and
+	// the group are root's alone.
+	if perm&0o020 != 0 && !(uid == 0 && rootOnlyGroups[gid]) {
+		return fmt.Errorf("ipc: refusing group-writable socket dir %q (gid %d); use a directory writable only by its owner (or sticky)", dir, gid)
 	}
 	return nil
 }

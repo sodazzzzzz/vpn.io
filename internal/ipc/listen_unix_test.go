@@ -187,45 +187,54 @@ func TestListenRefusesNonSocketPath(t *testing.T) {
 	}
 }
 
-// TestCheckSocketDirAttrs walks the owner × permission matrix directly. The
-// root-owned rows are the reason this helper exists: macOS ships /var/run as
-// root:daemon 0775, so a test that has to chown a real directory to root could
+// TestCheckSocketDirAttrs walks the owner × group × permission matrix directly.
+// The root-owned rows are the reason this helper exists: macOS ships /var/run as
+// root:daemon 0775, so a test that had to chown a real directory to root could
 // never cover the mode the helper actually runs in.
 func TestCheckSocketDirAttrs(t *testing.T) {
-	const root, other = 0, 4242
+	const (
+		root   = 0
+		daemon = 1
+		staff  = 20 // macOS: every ordinary user is in it
+		other  = 4242
+	)
 	self := uint32(os.Geteuid())
 
 	cases := []struct {
 		name string
 		uid  uint32
+		gid  uint32
 		mode os.FileMode
 		ok   bool
+		// selfRow marks a row whose point is that WE own the directory; running
+		// the suite as root collapses it onto a root row with different rules,
+		// so it says nothing there.
+		selfRow bool
 	}{
-		{"root 0755", root, 0o755, true},
-		// The shape macOS gives /var/run: root-owned and group-writable by a
-		// group only root can join.
-		{"root 0775", root, 0o775, true},
-		{"root 0777", root, 0o777, false},
-		{"root 0777 sticky", root, 0o777 | os.ModeSticky, true},
-		{"self 0700", self, 0o700, true},
-		{"self 0770", self, 0o770, false},
-		{"self 0707", self, 0o707, false},
-		{"self 0777 sticky", self, 0o777 | os.ModeSticky, true},
-		{"foreign owner 0700", other, 0o700, false},
+		{name: "root:wheel 0755", uid: root, gid: root, mode: 0o755, ok: true},
+		// The shape macOS gives /var/run: root-owned, group daemon, group-write.
+		{name: "root:daemon 0775", uid: root, gid: daemon, mode: 0o775, ok: true},
+		// Same bits, but a group ordinary users are in — a real write path.
+		{name: "root:staff 0775", uid: root, gid: staff, mode: 0o775, ok: false},
+		{name: "root:wheel 0777", uid: root, gid: root, mode: 0o777, ok: false},
+		{name: "root:wheel 0777 sticky", uid: root, gid: root, mode: 0o777 | os.ModeSticky, ok: true},
+		{name: "self 0700", uid: self, gid: staff, mode: 0o700, ok: true, selfRow: true},
+		{name: "self 0770", uid: self, gid: staff, mode: 0o770, ok: false, selfRow: true},
+		{name: "self 0707", uid: self, gid: staff, mode: 0o707, ok: false, selfRow: true},
+		{name: "self 0777 sticky", uid: self, gid: staff, mode: 0o777 | os.ModeSticky, ok: true, selfRow: true},
+		{name: "foreign owner 0700", uid: other, gid: staff, mode: 0o700, ok: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Running as root collapses the "self" rows onto the root ones, where
-			// group-write is deliberately allowed — those rows say nothing then.
-			if self == 0 && tc.uid == self && !tc.ok {
+			if tc.selfRow && self == 0 {
 				t.Skip("running as root: the self rows duplicate the root ones")
 			}
-			err := checkSocketDirAttrs("/dir", tc.uid, tc.mode)
+			err := checkSocketDirAttrs("/dir", tc.uid, tc.gid, tc.mode)
 			if tc.ok && err != nil {
-				t.Fatalf("uid=%d mode=%v must be safe: %v", tc.uid, tc.mode, err)
+				t.Fatalf("uid=%d gid=%d mode=%v must be safe: %v", tc.uid, tc.gid, tc.mode, err)
 			}
 			if !tc.ok && err == nil {
-				t.Fatalf("uid=%d mode=%v must be rejected", tc.uid, tc.mode)
+				t.Fatalf("uid=%d gid=%d mode=%v must be rejected", tc.uid, tc.gid, tc.mode)
 			}
 		})
 	}
