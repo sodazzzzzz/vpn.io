@@ -829,7 +829,7 @@ func (c *Client) runSession(ctx context.Context, conn *tls.Conn, outbound <-chan
 	select {
 	case firstErr = <-errCh:
 	case derr := <-c.devDead:
-		firstErr = fmt.Errorf("%w: TUN device read: %v", ErrFatalConfig, derr)
+		firstErr = c.deviceGone(derr)
 	case <-ctx.Done():
 		firstErr = nil
 	}

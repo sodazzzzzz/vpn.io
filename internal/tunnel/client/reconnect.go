@@ -112,8 +112,7 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 		case <-ctx.Done():
 			return nil
 		case derr := <-c.devDead:
-			c.log.Error("TUN device is gone; not reconnecting", "err", derr)
-			return fmt.Errorf("%w: TUN device read: %v", ErrFatalConfig, derr)
+			return c.deviceGone(derr)
 		case <-time.After(d):
 		}
 		attempt++
@@ -126,11 +125,17 @@ func (c *Client) runReconnectLoop(ctx context.Context, outbound <-chan []byte) e
 func (c *Client) deviceDied() error {
 	select {
 	case derr := <-c.devDead:
-		c.log.Error("TUN device is gone; not reconnecting", "err", derr)
-		return fmt.Errorf("%w: TUN device read: %v", ErrFatalConfig, derr)
+		return c.deviceGone(derr)
 	default:
 		return nil
 	}
+}
+
+// deviceGone is the single place that turns a dead TUN device into the error
+// every caller returns, so the message and the fatal wrapper can't drift apart.
+func (c *Client) deviceGone(cause error) error {
+	c.log.Error("TUN device is gone; not reconnecting", "err", cause)
+	return fmt.Errorf("%w: TUN device read: %v", ErrFatalConfig, cause)
 }
 
 // backoff returns the wait before attempt N: min*2^attempt + jitter,
