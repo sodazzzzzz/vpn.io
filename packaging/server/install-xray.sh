@@ -36,6 +36,7 @@ XRAY_SHA256_AMD64="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c
 XRAY_SHA256_ARM64="4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
 
 SERVICE_USER="vpn-xray"
+BOT_USER="vpn-bot"
 CONF_DIR="/etc/vpn-xray"
 DATA_DIR="/usr/local/share/xray"
 BIN="/usr/local/bin/xray"
@@ -127,22 +128,55 @@ say "config directory"
 if [ -d "$CONF_DIR" ]; then
   skip "$CONF_DIR exists"
 else
-  run install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONF_DIR"
+  run install -d -m 2770 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONF_DIR"
 fi
 # The private key and the client UUIDs live here, so tighten the directory even
 # when it predates this script (an operator may have created it by hand).
+#
+# 2770, not 0700: two accounts write here — the service reads the config, and
+# vpn-bot issues and revokes access. The setgid bit makes a file created by
+# either of them (or by root running the CLI) inherit the group, so the other
+# can still read and replace it. Everyone else on the box is kept out by the
+# directory, which is the only boundary that matters for a directory of keys.
 run chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR"
-run chmod 0700 "$CONF_DIR"
+run chmod 2770 "$CONF_DIR"
 
-say "unit"
+# The bot writes the client list; without membership it could not, and every
+# invite would fail at the last step. Skipped silently when the bot is not
+# installed on this node.
+if id "$BOT_USER" >/dev/null 2>&1; then
+  if id -nG "$BOT_USER" | tr ' ' '\n' | grep -qx "$SERVICE_USER"; then
+    skip "$BOT_USER is in the $SERVICE_USER group"
+  else
+    say "granting $BOT_USER access to $CONF_DIR"
+    run usermod -aG "$SERVICE_USER" "$BOT_USER"
+    echo "    restart vpn-bot for the new group to take effect"
+  fi
+fi
+
+say "units"
 here="$(cd "$(dirname "$0")" && pwd)"
-unit_src="$here/vpn-xray.service"
-[ -f "$unit_src" ] || { echo "vpn-xray.service not found next to this script" >&2; exit 1; }
-if cmp -s "$unit_src" /etc/systemd/system/vpn-xray.service; then
-  skip "unit up to date"
+reload=0
+for unit in vpn-xray.service vpn-xray-reload.service vpn-xray-reload.path; do
+  src="$here/$unit"
+  [ -f "$src" ] || { echo "$unit not found next to this script" >&2; exit 1; }
+  if cmp -s "$src" "/etc/systemd/system/$unit"; then
+    skip "$unit up to date"
+  else
+    run install -m 0644 "$src" "/etc/systemd/system/$unit"
+    reload=1
+  fi
+done
+[ "$reload" = 0 ] || run systemctl daemon-reload
+
+# The path unit is how a change reaches the running service: it watches the
+# config and restarts Xray when it changes, so the unprivileged writer never
+# needs the right to restart anything. Enable it even before there is a config —
+# it costs nothing and is one less thing to remember later.
+if systemctl is-enabled vpn-xray-reload.path >/dev/null 2>&1; then
+  skip "vpn-xray-reload.path enabled"
 else
-  run install -m 0644 "$unit_src" /etc/systemd/system/vpn-xray.service
-  run systemctl daemon-reload
+  run systemctl enable --now vpn-xray-reload.path
 fi
 
 if [ "$SKIP_FIREWALL" = 0 ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then

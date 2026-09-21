@@ -1,0 +1,15 @@
+[Unit]
+Description=Restart vpn.io VLESS service after a config change
+Documentation=https://github.com/sodazzzzzz/vpn.io/blob/main/docs/VLESS.md
+# Nothing to do if the service is not installed or not wanted.
+Requisite=vpn-xray.service
+
+[Service]
+Type=oneshot
+# Coalesce a burst of changes into one restart: adding two people in a row
+# writes the config twice, and restarting twice would drop live connections
+# twice for no reason. The delay is the debounce — the path unit re-triggers at
+# most once while this is running, so the second write is picked up by the
+# restart that follows, not by a third.
+ExecStartPre=/bin/sleep 3
+ExecStart=/bin/systemctl restart vpn-xray.service

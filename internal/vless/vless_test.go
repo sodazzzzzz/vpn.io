@@ -257,8 +257,10 @@ func TestStoreNodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("node.json mode = %o, want 600", perm)
+	// Owner and group only: the group is the service plus the bot, and nobody
+	// else on the box has any business reading a private key.
+	if perm := info.Mode().Perm(); perm != 0o660 {
+		t.Errorf("node.json mode = %o, want 660", perm)
 	}
 }
 
@@ -307,8 +309,8 @@ func TestWriteConfigPermissionsAndAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("config.json mode = %o, want 600 (it holds the private key)", perm)
+	if perm := info.Mode().Perm(); perm != 0o660 {
+		t.Errorf("config.json mode = %o, want 660 (it holds the private key)", perm)
 	}
 
 	// A render that fails must leave the previous config untouched, so the

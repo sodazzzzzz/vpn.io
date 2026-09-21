@@ -1,0 +1,15 @@
+[Unit]
+Description=Apply vpn.io VLESS client-list changes
+Documentation=https://github.com/sodazzzzzz/vpn.io/blob/main/docs/VLESS.md
+
+[Path]
+# Xray-core reads its config once, at start-up, so a client added or revoked
+# only takes effect on a restart. The process that writes the config is vpn-bot,
+# which runs unprivileged with NoNewPrivileges=yes: it cannot elevate through
+# sudo even with a rule, and giving it a way to restart units would be a bigger
+# grant than this needs. So systemd watches the file instead, and the privileged
+# half stays here, where it can do exactly one thing.
+PathChanged=/etc/vpn-xray/config.json
+
+[Install]
+WantedBy=multi-user.target

@@ -12,9 +12,15 @@ import (
 	"github.com/govpn/internal/filelock"
 )
 
-// DefaultDir is where a node keeps its VLESS state. The directory itself is
-// 0700 and owned by the service user (packaging/server/install-xray.sh creates
-// it): everything in here is either a key or a credential.
+// DefaultDir is where a node keeps its VLESS state.
+//
+// The directory is 2770 and owned by the service user and group
+// (packaging/server/install-xray.sh creates it): everything in here is either a
+// key or a credential, so nothing outside that group may read it. Two accounts
+// are in the group — the Xray service, which reads the config, and vpn-bot,
+// which issues and revokes access. The setgid bit makes every file created here
+// inherit the group, so a file written by the CLI as root stays readable by
+// both.
 const DefaultDir = "/etc/vpn-xray"
 
 // maxFileBytes caps what the store will read. The files are a few KB; a larger
@@ -113,14 +119,19 @@ func (s *Store) WriteConfig(n Node, clients []Client) error {
 }
 
 // write saves data to path atomically (temp file in the same directory, then
-// rename) with 0600 permissions, creating the directory 0700 if missing.
+// rename) with 0660 permissions, creating the directory 2770 if missing.
+//
+// Group-writable rather than owner-only, because two accounts legitimately
+// write here: vpn-bot when someone is added or revoked, and root when the
+// operator runs the CLI. Owner-only would mean whichever wrote first locks the
+// other out. The directory keeps everyone else out.
 //
 // Atomicity matters here for the same reason it does in the revocation store:
 // Xray may be restarted at any moment by whoever is adding a client, and a
 // half-written config.json is a service that does not come back.
 func (s *Store) write(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o2770); err != nil {
 		return fmt.Errorf("vless: create %q: %w", dir, err)
 	}
 	tmp, err := os.CreateTemp(dir, ".vless-*.tmp")
@@ -130,7 +141,7 @@ func (s *Store) write(path string, data []byte) error {
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
 
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(0o660); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("vless: chmod temp: %w", err)
 	}
