@@ -16,6 +16,7 @@ set -euo pipefail
 
 REPO="sodazzzzzz/vpn.io"
 BOT_BIN="/usr/local/bin/vpn-bot"
+VLESS_BIN="/usr/local/bin/vpn-vless"
 SERVER_BIN="/usr/local/bin/vpn-server"
 INSTALLERS="/etc/vpn-bot/installers"
 # Tag of the release currently installed. Written only after a run succeeds, so
@@ -102,9 +103,22 @@ fi
 
 base="https://github.com/$REPO/releases/download/$tag"
 dl() { echo "    download $1"; curl -fSL --retry 3 -o "$tmp/$1" "$base/$1"; }
+# dl_opt is for an asset a release may legitimately not have — an older release
+# predating a tool. A missing file is skipped (and verified/installed only if it
+# arrived); anything else here still fails closed.
+dl_opt() {
+  echo "    download $1 (optional)"
+  curl -fSL --retry 3 -o "$tmp/$1" "$base/$1" || { rm -f "$tmp/$1"; echo "      not in this release — skipping"; }
+}
 
 # Always refresh the bot and the installers it hands out.
 dl vpn-bot
+# vpn-vless manages the node's second service. Optional in both directions: a
+# release older than the tool does not carry it, and a node that does not run
+# that service does not install it. A node that DOES run it must not be left
+# with a tool older than the bot writing the same files, which is why it is
+# fetched without being asked for.
+dl_opt vpn-vless
 dl vpn-io-setup.exe
 dl vpn.io.pkg
 dl SHA256SUMS          # required — we refuse to install anything we can't verify
@@ -128,7 +142,7 @@ echo "==> verify checksums"
 ( cd "$tmp"
   : > _check
   want=0
-  for f in vpn-bot vpn-server vpn-io-setup.exe vpn.io.pkg; do
+  for f in vpn-bot vpn-vless vpn-server vpn-io-setup.exe vpn.io.pkg; do
     [ -f "$f" ] || continue
     want=$((want + 1))
     grep -E "[[:space:]]${f}\$" SHA256SUMS >> _check || true
@@ -142,6 +156,12 @@ echo "==> verify checksums"
 
 echo "==> update bot + installers"
 install -m 0755 "$tmp/vpn-bot" "$BOT_BIN"
+# Only on a node that already runs the second service: installing the tool on a
+# node without it would imply a service that is not there.
+if [ -d /etc/vpn-xray ] && [ -f "$tmp/vpn-vless" ]; then
+  install -m 0755 "$tmp/vpn-vless" "$VLESS_BIN"
+  echo "    vpn-vless updated"
+fi
 install -m 0644 -o vpn-bot -g vpn-bot "$tmp/vpn-io-setup.exe" "$INSTALLERS/vpn-io-setup.exe"
 install -m 0644 -o vpn-bot -g vpn-bot "$tmp/vpn.io.pkg"       "$INSTALLERS/vpn.io.pkg"
 systemctl restart vpn-bot

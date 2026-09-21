@@ -26,7 +26,7 @@ jobs:
       - name: build linux binaries
         run: |
           mkdir -p out
-          for cmd in vpn-server vpn-bot vpn-ca; do
+          for cmd in vpn-server vpn-bot vpn-ca vpn-vless; do
             GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "out/$cmd" "./cmd/$cmd"
           done
           ls -lh out
@@ -194,11 +194,12 @@ jobs:
           cp artifacts/server-bot/vpn-server      rel/
           cp artifacts/server-bot/vpn-bot         rel/
           cp artifacts/server-bot/vpn-ca          rel/
+          cp artifacts/server-bot/vpn-vless       rel/
           cp artifacts/windows-installer/vpn-io-setup.exe rel/
           cp artifacts/macos-pkg/vpn.io.pkg       rel/
           # Both WebKit-ABI .deb builds (linux-desktop-deb-webkit2_40/_41).
           cp artifacts/linux-desktop-deb-*/vpn-io_*.deb rel/
-          chmod +x rel/vpn-server rel/vpn-bot rel/vpn-ca
+          chmod +x rel/vpn-server rel/vpn-bot rel/vpn-ca rel/vpn-vless
           ( cd rel && sha256sum * > SHA256SUMS )
           ls -lh rel
       - name: sign checksums (minisign)
