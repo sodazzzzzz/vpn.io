@@ -101,8 +101,8 @@ Commands:
         (*.exe / *.pkg / *.deb found in DIR) via inline buttons.
         With -owner ID, that Telegram user can manage clients in-chat instead
         of this CLI: /invite <name> [profile|vless|both], /invites,
-        /revoke <name>, /unrevoke <name>, /revoked. Anyone can /whoami to
-        learn their own ID.
+        /revoke <name>, /unrevoke <name>, /revoked, /vless. Anyone can
+        /whoami to learn their own ID.
         With -vless-dir DIR, invites can also hand out VLESS access on a node
         that runs the second service; without it only profiles are issued.
         With -watch URL (needs -owner), also poll the node's health endpoint
@@ -413,6 +413,9 @@ type env struct {
 	// without it must still onboard people to the first.
 	vless     *vless.Store
 	vlessUnit string
+	// waitApplied overrides how we confirm a VLESS change reached the running
+	// service. Only tests set it; the node has systemd.
+	waitApplied func(context.Context, string) error
 
 	server        string
 	serverName    string
@@ -422,6 +425,14 @@ type env struct {
 
 // vlessEnabled reports whether this node can hand out VLESS access.
 func (e *env) vlessEnabled() bool { return e.vless != nil }
+
+// confirmApplied waits for the VLESS service to come back after a change.
+func (e *env) confirmApplied(ctx context.Context) error {
+	if e.waitApplied != nil {
+		return e.waitApplied(ctx, e.vlessUnit)
+	}
+	return vless.WaitApplied(ctx, e.vlessUnit)
+}
 
 func handleMessage(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
@@ -453,6 +464,15 @@ func handleMessage(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
 		// Same gate as /invite: owner only, private chat only.
 		if e.ownerID != 0 && msg.From.ID == e.ownerID && msg.Chat.IsPrivate() {
 			handleRevokeCommand(bot, e, msg)
+		} else {
+			reply(bot, msg.Chat.ID, helpText)
+		}
+		return
+	case "vless":
+		// Same owner-only, private-chat gate as /invites: this names the people
+		// who have access.
+		if e.ownerID != 0 && msg.From.ID == e.ownerID && msg.Chat.IsPrivate() {
+			handleVLESSList(bot, e, msg)
 		} else {
 			reply(bot, msg.Chat.ID, helpText)
 		}
@@ -611,7 +631,7 @@ func issueVLESS(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message, name, who s
 	// nothing — and the only one who can fix that is the owner.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := vless.WaitApplied(ctx, e.vlessUnit); err != nil {
+	if err := e.confirmApplied(ctx); err != nil {
 		log.Printf("VLESS service did not apply the change for %q: %v", name, err)
 		notifyOwner(bot, e.ownerID, "added VLESS access for %q, but the service did not come back: %v", name, err)
 		reply(bot, msg.Chat.ID, "Your access is created. If it doesn't connect within a minute, tell the owner — they've been notified.")
@@ -721,6 +741,36 @@ func formatInviteList(tokens []invite.Token, ttl time.Duration, now time.Time) s
 	return b.String()
 }
 
+// handleVLESSList answers the owner's /vless with who currently has VLESS
+// access on this node. It prints names and dates, never UUIDs: the list is for
+// knowing who is in, and a UUID in a chat is a credential in a chat.
+func handleVLESSList(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
+	if !e.vlessEnabled() {
+		reply(bot, msg.Chat.ID, "This node has no VLESS service configured. See docs/VLESS.md.")
+		return
+	}
+	clients, err := e.vless.Clients()
+	if err != nil {
+		log.Printf("/vless list: %v", err)
+		reply(bot, msg.Chat.ID, "Couldn't read the VLESS client list — check the logs.")
+		return
+	}
+	if len(clients) == 0 {
+		reply(bot, msg.Chat.ID, "Nobody has VLESS access on this node.")
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "VLESS access (%d):\n", len(clients))
+	for _, c := range clients {
+		created := c.Created
+		if len(created) >= 10 {
+			created = created[:10] // the date is enough; the clock is noise
+		}
+		fmt.Fprintf(&b, "• %s (since %s)\n", c.Name, created)
+	}
+	reply(bot, msg.Chat.ID, b.String())
+}
+
 // handleRevokeCommand serves the owner's /revoke, /unrevoke and /revoked against
 // the same revoked.json the server enforces. The caller has verified the sender
 // is the owner and the chat is private.
@@ -775,37 +825,96 @@ func handleRevokeCommand(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
 			return
 		}
 		log.Printf("un-revoked %q via /unrevoke from %s", name, who)
-		reply(bot, msg.Chat.ID, fmt.Sprintf("Un-revoked %q.", name))
+		text := fmt.Sprintf("Un-revoked %q.", name)
+		// A certificate can come back; a VLESS credential must not. The UUID
+		// was revoked because it should no longer open the door, and it may be
+		// in someone else's hands by now — handing the same one back would
+		// restore access for them too. A new one costs an /invite.
+		if e.vlessEnabled() {
+			text += fmt.Sprintf("\n\nThis restores the app profile only. The old VLESS link stays dead on purpose — it may be in other hands by now. Issue a fresh one with:\n/invite %s vless", name)
+		}
+		reply(bot, msg.Chat.ID, text)
 		return
 	}
 
-	// /revoke: deny every certificate ever issued to this name, not just the
-	// current one — a re-issue supersedes the old cert but leaves it valid
-	// against the CA, and its serial survives only in the issuance ledger.
-	serials, err := ca.ClientSerials(authority.Dir, name)
-	if err != nil {
-		log.Printf("/revoke %q: %v", name, err)
-		reply(bot, msg.Chat.ID, fmt.Sprintf("No issued client named %q (or its certificate is unreadable).", name))
+	// /revoke means "this person no longer has access", and a node can give a
+	// person access two ways. Both are cut here, independently: someone may
+	// hold only a profile, only a link, or both, and the owner should not have
+	// to know which to type the right command.
+	//
+	// Neither half's absence is a failure — only both missing is.
+	certMsg, certFound := revokeCertificates(e, name, who)
+	vlessMsg, vlessFound := revokeVLESS(e, name, who)
+
+	if !certFound && !vlessFound {
+		reply(bot, msg.Chat.ID, fmt.Sprintf("No client named %q has access — nothing to revoke.", name))
 		return
+	}
+	var parts []string
+	for _, m := range []string{certMsg, vlessMsg} {
+		if m != "" {
+			parts = append(parts, m)
+		}
+	}
+	reply(bot, msg.Chat.ID, strings.Join(parts, "\n"))
+}
+
+// revokeCertificates denies every certificate ever issued to name — not just
+// the current one: a re-issue supersedes the old cert but leaves it valid
+// against the CA, and its serial survives only in the issuance ledger.
+//
+// It returns the line to show the owner and whether this name had any
+// certificates at all.
+func revokeCertificates(e *env, name, who string) (string, bool) {
+	serials, err := ca.ClientSerials(e.authority.Dir, name)
+	if err != nil || len(serials) == 0 {
+		// Not an error here: the person may only ever have had a VLESS link.
+		return "", false
 	}
 	added := 0
 	for _, serial := range serials {
-		ok, err := store.Add(serial, name)
+		ok, err := e.revoked.Add(serial, name)
 		if err != nil {
 			log.Printf("/revoke add %q: %v", name, err)
-			reply(bot, msg.Chat.ID, "Couldn't revoke — check the logs.")
-			return
+			return "Couldn't revoke the app profile — check the logs.", true
 		}
 		if ok {
 			added++
 		}
 	}
 	if added == 0 {
-		reply(bot, msg.Chat.ID, fmt.Sprintf("%q was already revoked.", name))
-		return
+		return fmt.Sprintf("App profile: %q was already revoked.", name), true
 	}
 	log.Printf("revoked %q via /revoke from %s (%d certificate(s), %d newly)", name, who, len(serials), added)
-	reply(bot, msg.Chat.ID, fmt.Sprintf("Revoked %q. The server cuts it off on its next connection.", name))
+	return fmt.Sprintf("App profile: revoked %q. The server cuts it off on its next connection.", name), true
+}
+
+// revokeVLESS removes name from the node's VLESS client list and waits for the
+// service to come back, so the owner learns here — not from the friend — if the
+// access is still live.
+func revokeVLESS(e *env, name, who string) (string, bool) {
+	if !e.vlessEnabled() {
+		return "", false
+	}
+	removed, err := e.vless.Remove(name)
+	if err != nil {
+		log.Printf("/revoke VLESS %q: %v", name, err)
+		return "Couldn't revoke the VLESS link — check the logs.", true
+	}
+	if !removed {
+		return "", false
+	}
+	log.Printf("revoked VLESS access %q via /revoke from %s", name, who)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.confirmApplied(ctx); err != nil {
+		// A revocation that did not reach the service is the dangerous
+		// direction: the link still works and nobody would notice.
+		log.Printf("VLESS service did not apply the revocation of %q: %v", name, err)
+		return fmt.Sprintf("VLESS: removed %q from the list, but the service did NOT restart (%v) — the link may still work. Check: systemctl status %s", name, err, e.vlessUnit), true
+	}
+	return fmt.Sprintf("VLESS: revoked %q. The link is dead now.", name), true
 }
 
 // userLabel is a human-ish audit string for a Telegram user. UserName is

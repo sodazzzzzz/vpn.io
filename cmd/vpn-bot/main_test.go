@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/govpn/internal/invite"
+	"github.com/govpn/internal/vless"
 )
 
 // formatInviteList must never echo a token secret, and must label each token's
@@ -95,5 +98,85 @@ func TestInviteGrantArgument(t *testing.T) {
 		if name != tt.wantName || grant != tt.wantGrant {
 			t.Errorf("/invite %q → name %q grant %q, want %q / %q", tt.args, name, grant, tt.wantName, tt.wantGrant)
 		}
+	}
+}
+
+// testEnv builds an env whose VLESS half is real (a store in a temp dir) but
+// whose systemd is not: applied decides what confirming a change reports.
+func testEnv(t *testing.T, applied error) *env {
+	t.Helper()
+	store := vless.New(t.TempDir())
+	node, err := vless.NewNode("203.0.113.10", "", "", "", "", 0)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	if err := store.SaveNode(node); err != nil {
+		t.Fatalf("SaveNode: %v", err)
+	}
+	return &env{
+		vless:       store,
+		vlessUnit:   vless.DefaultUnit,
+		waitApplied: func(context.Context, string) error { return applied },
+	}
+}
+
+// Revoking someone who has a link must remove it and say so — and the reply is
+// the only place the owner learns whether it actually took effect.
+func TestRevokeVLESS(t *testing.T) {
+	e := testEnv(t, nil)
+	if _, err := e.vless.Add("anna"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	text, found := revokeVLESS(e, "anna", "tg:owner")
+	if !found {
+		t.Fatal("revokeVLESS did not find an existing client")
+	}
+	if !strings.Contains(text, "dead") {
+		t.Errorf("reply does not say the link is dead: %q", text)
+	}
+	clients, err := e.vless.Clients()
+	if err != nil {
+		t.Fatalf("Clients: %v", err)
+	}
+	if len(clients) != 0 {
+		t.Errorf("client list still has %d entries", len(clients))
+	}
+}
+
+// Someone who only ever had an app profile is not a failure to report: /revoke
+// covers both services and either half may be empty.
+func TestRevokeVLESSUnknownName(t *testing.T) {
+	e := testEnv(t, nil)
+	if text, found := revokeVLESS(e, "nobody", "tg:owner"); found || text != "" {
+		t.Errorf("revokeVLESS on an unknown name = %q, %v", text, found)
+	}
+}
+
+// A node with no VLESS service must not claim to have revoked anything there.
+func TestRevokeVLESSDisabled(t *testing.T) {
+	e := &env{}
+	if text, found := revokeVLESS(e, "anna", "tg:owner"); found || text != "" {
+		t.Errorf("revokeVLESS with no service = %q, %v", text, found)
+	}
+}
+
+// The dangerous direction: the name is off the list but the service never
+// restarted, so the link still works. The owner must be told in plain words,
+// not reassured.
+func TestRevokeVLESSServiceDidNotRestart(t *testing.T) {
+	e := testEnv(t, errors.New("unit failed"))
+	if _, err := e.vless.Add("anna"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	text, found := revokeVLESS(e, "anna", "tg:owner")
+	if !found {
+		t.Fatal("revokeVLESS did not find an existing client")
+	}
+	if !strings.Contains(text, "may still work") {
+		t.Errorf("reply hides that the link may still be live: %q", text)
+	}
+	if strings.Contains(text, "dead") {
+		t.Errorf("reply claims the link is dead when the service never restarted: %q", text)
 	}
 }
