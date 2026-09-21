@@ -54,7 +54,7 @@ func Config(n Node, clients []Client) ([]byte, error) {
 		},
 		"inbounds": []any{map[string]any{
 			"tag":      "vless-reality",
-			"listen":   "0.0.0.0",
+			"listen":   n.ListenAddr(),
 			"port":     n.Port,
 			"protocol": "vless",
 			"settings": map[string]any{

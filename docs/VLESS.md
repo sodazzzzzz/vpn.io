@@ -219,10 +219,18 @@ browser, is the node's. If it does not:
 ## Applying changes
 
 Xray reads its config once, at start-up, so adding or revoking someone takes
-effect on a restart. Nobody restarts it by hand:
-`vpn-xray-reload.path` watches `/etc/vpn-xray/config.json` and runs a root-owned
-oneshot that restarts `vpn-xray`, three seconds after the change so a burst of
-edits costs one restart rather than several.
+effect on a restart. Nobody restarts it by hand: `vpn-xray-reload.path` watches
+`/etc/vpn-xray/config.json` and runs a root-owned oneshot
+(`/usr/local/lib/vpn-xray/apply-config.sh`) that waits three seconds — so a
+burst of edits costs one restart — and then restarts `vpn-xray`, but **only if
+the config is actually newer than the running process**.
+
+That last condition is not paranoia. A path unit can fire again after the
+service it triggered finishes, and sleep-then-restart without a guard becomes a
+service that restarts every three seconds forever. The service's own log looks
+fine (repeated clean starts); what users see is connections that die
+mid-handshake. If you ever suspect it, `journalctl -u vpn-xray | tail -30` shows
+the cadence immediately.
 
 That indirection exists because the writer is `vpn-bot`, which runs unprivileged
 with `NoNewPrivileges=yes` — it cannot elevate through sudo even with a rule,
@@ -244,6 +252,20 @@ first one (see the node-address procedure in `docs/`):
 3. Reissue every link — the address is baked into each one. `vpn-vless link
    <name>` prints the current link per person; the UUIDs do not change, so
    nobody has to be re-added.
+
+## IPv6
+
+`init` binds `::` when the host has IPv6 and `0.0.0.0` when it does not, and
+records the choice as `listen` in `node.json`.
+
+It matters more than it looks: mobile networks are frequently IPv6-only, and a
+node bound to IPv4 only is simply unreachable from them. Nothing on the node
+shows this — the service is healthy, the link is valid, and only the person on
+that network finds out. To change it later, edit `listen` in `node.json`, then
+`vpn-vless render && systemctl restart vpn-xray`. The link does not change.
+
+Note that the node's address in the link is still what clients dial; publishing
+an IPv6 address there is a separate decision (a second node entry, effectively).
 
 ## Files
 

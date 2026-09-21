@@ -97,6 +97,7 @@ func cmdInit(args []string) error {
 	sni := fs.String("sni", "", "server name clients announce (default: the dest host)")
 	fp := fs.String("fp", vless.DefaultFingerprint, "TLS fingerprint clients imitate")
 	label := fs.String("label", "", "name client apps show this node as (default: address:port)")
+	listen := fs.String("listen", "", "bind address (default: :: when this host has IPv6, else 0.0.0.0)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -117,7 +118,11 @@ func cmdInit(args []string) error {
 	}
 	fmt.Println()
 
-	n, err := vless.NewNode(*address, *dest, *sni, *fp, *label, *port)
+	bind := *listen
+	if bind == "" {
+		bind = vless.DetectListen()
+	}
+	n, err := vless.NewNode(*address, *dest, *sni, *fp, *label, bind, *port)
 	if err != nil {
 		return err
 	}
@@ -131,7 +136,7 @@ func cmdInit(args []string) error {
 		return err
 	}
 	fmt.Printf("node initialised in %s\n", s.Dir)
-	fmt.Printf("  listening on   %s\n", n.Endpoint())
+	fmt.Printf("  listening on   %s (bind %s)\n", n.Endpoint(), n.ListenAddr())
 	fmt.Printf("  impersonating  %s (sni %s)\n", n.Dest, n.ServerName())
 	fmt.Printf("  public key     %s\n", n.PublicKey)
 	fmt.Println()

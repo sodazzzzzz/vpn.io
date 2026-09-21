@@ -11,7 +11,7 @@ import (
 func newTestStore(t *testing.T) (*Store, Node) {
 	t.Helper()
 	s := New(t.TempDir())
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestLink(t *testing.T) {
 }
 
 func TestLinkLabelEscaping(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", "дом и офис", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "дом и офис", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestLinkLabelEscaping(t *testing.T) {
 }
 
 func TestLinkLabelDefaultsToEndpoint(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}

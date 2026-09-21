@@ -6,10 +6,9 @@ Requisite=vpn-xray.service
 
 [Service]
 Type=oneshot
-# Coalesce a burst of changes into one restart: adding two people in a row
-# writes the config twice, and restarting twice would drop live connections
-# twice for no reason. The delay is the debounce — the path unit re-triggers at
-# most once while this is running, so the second write is picked up by the
-# restart that follows, not by a third.
-ExecStartPre=/bin/sleep 3
-ExecStart=/bin/systemctl restart vpn-xray.service
+# The debounce and — crucially — the "is this already applied?" guard live in
+# the script. A bare sleep+restart here turns an extra path trigger into a
+# service that restarts every few seconds forever; the script compares the
+# config's timestamp with the service's start time and does nothing when the
+# running process is already newer. See apply-config.sh.
+ExecStart=/usr/local/lib/vpn-xray/apply-config.sh

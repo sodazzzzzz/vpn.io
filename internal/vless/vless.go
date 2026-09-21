@@ -76,10 +76,11 @@ const shortIDBytes = 8
 type Node struct {
 	Address     string   `json:"address"`
 	Port        int      `json:"port"`
-	Label       string   `json:"label,omitempty"` // what client apps show this node as
-	PrivateKey  string   `json:"privateKey"`      // base64url, node-only — never in a link
-	PublicKey   string   `json:"publicKey"`       // base64url, travels in every link
-	Dest        string   `json:"dest"`            // host:port of the impersonated site
+	Label       string   `json:"label,omitempty"`  // what client apps show this node as
+	Listen      string   `json:"listen,omitempty"` // bind address; empty means IPv4 only
+	PrivateKey  string   `json:"privateKey"`       // base64url, node-only — never in a link
+	PublicKey   string   `json:"publicKey"`        // base64url, travels in every link
+	Dest        string   `json:"dest"`             // host:port of the impersonated site
 	ServerNames []string `json:"serverNames"`
 	Fingerprint string   `json:"fingerprint"`
 }
@@ -103,7 +104,7 @@ type Client struct {
 
 // NewNode generates a fresh REALITY identity for address. Empty dest,
 // serverName or fingerprint take the defaults above.
-func NewNode(address, dest, serverName, fingerprint, label string, port int) (Node, error) {
+func NewNode(address, dest, serverName, fingerprint, label, listen string, port int) (Node, error) {
 	if strings.TrimSpace(address) == "" {
 		return Node{}, fmt.Errorf("vless: node address is required")
 	}
@@ -130,6 +131,7 @@ func NewNode(address, dest, serverName, fingerprint, label string, port int) (No
 		Address:     address,
 		Port:        port,
 		Label:       label,
+		Listen:      listen,
 		PrivateKey:  priv,
 		PublicKey:   pub,
 		Dest:        dest,
@@ -168,6 +170,35 @@ func (n Node) Validate() error {
 		return fmt.Errorf("vless: public key: %w", err)
 	}
 	return nil
+}
+
+// ListenAddr is the address the service binds.
+//
+// Empty means "0.0.0.0" — IPv4 only, which is what a node without IPv6 can
+// offer. A node that HAS IPv6 should bind "::" instead: on Linux that accepts
+// both families, and a client on an IPv6-only mobile network can reach it at
+// all. Getting this wrong is invisible from the node — the service is healthy,
+// the link is valid, and only the person on that network finds out. DetectListen
+// picks the right one at init; the field is there so an operator can override
+// a node whose connectivity changed later.
+func (n Node) ListenAddr() string {
+	if n.Listen == "" {
+		return "0.0.0.0"
+	}
+	return n.Listen
+}
+
+// DetectListen returns the bind address this host can actually use: "::" when
+// an IPv6 socket can be opened, "0.0.0.0" otherwise. A node with IPv6 disabled
+// in the kernel cannot bind "::" at all, and a service that refuses to start is
+// worse than one that serves IPv4 only.
+func DetectListen() string {
+	l, err := net.Listen("tcp6", "[::]:0")
+	if err != nil {
+		return "0.0.0.0"
+	}
+	_ = l.Close()
+	return "::"
 }
 
 // Endpoint is the address clients dial, as host:port.

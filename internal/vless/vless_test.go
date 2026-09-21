@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestNewNodeDefaults(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -32,7 +33,7 @@ func TestNewNodeDefaults(t *testing.T) {
 }
 
 func TestNewNodeRequiresAddress(t *testing.T) {
-	if _, err := NewNode("  ", "", "", "", "", 0); err == nil {
+	if _, err := NewNode("  ", "", "", "", "", "", 0); err == nil {
 		t.Fatal("NewNode accepted an empty address")
 	}
 }
@@ -40,7 +41,7 @@ func TestNewNodeRequiresAddress(t *testing.T) {
 // The public key in every link must be the one derived from the private key we
 // keep, or clients negotiate against a key the node cannot use.
 func TestKeypairMatches(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestKeypairMatches(t *testing.T) {
 }
 
 func TestNodeValidate(t *testing.T) {
-	good, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	good, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestClientValidate(t *testing.T) {
 // Config is what Xray reads: check the fields REALITY cannot work without, and
 // the two privacy choices we made deliberately.
 func TestConfig(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -219,7 +220,7 @@ func TestConfig(t *testing.T) {
 }
 
 func TestConfigRejectsBrokenClient(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestStoreNodeRoundTrip(t *testing.T) {
 		t.Fatalf("LoadNode on a fresh dir = %v, want ErrNoNode", err)
 	}
 
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -268,14 +269,14 @@ func TestStoreNodeRoundTrip(t *testing.T) {
 // private key, so an accidental second init would cut everyone off.
 func TestSaveNodeRefusesOverwrite(t *testing.T) {
 	s := New(t.TempDir())
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
 	if err := s.SaveNode(n); err != nil {
 		t.Fatalf("SaveNode: %v", err)
 	}
-	other, err := NewNode("203.0.113.11", "", "", "", "", 0)
+	other, err := NewNode("203.0.113.11", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -294,7 +295,7 @@ func TestSaveNodeRefusesOverwrite(t *testing.T) {
 func TestWriteConfigPermissionsAndAtomicity(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -339,4 +340,50 @@ func TestWriteConfigPermissionsAndAtomicity(t *testing.T) {
 			t.Errorf("temp file left behind: %s", filepath.Join(dir, e.Name()))
 		}
 	}
+}
+
+// A node with IPv6 must bind "::", or clients on IPv6-only mobile networks
+// cannot reach it at all — and nothing on the node shows that.
+func TestListenAddr(t *testing.T) {
+	n, err := NewNode("203.0.113.10", "", "", "", "", "", 0)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	if got := n.ListenAddr(); got != "0.0.0.0" {
+		t.Errorf("default bind = %q, want 0.0.0.0", got)
+	}
+	n.Listen = "::"
+	if got := n.ListenAddr(); got != "::" {
+		t.Errorf("bind = %q, want ::", got)
+	}
+
+	data, err := Config(n, nil)
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	var cfg struct {
+		Inbounds []struct {
+			Listen string `json:"listen"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if cfg.Inbounds[0].Listen != "::" {
+		t.Errorf("config binds %q, want ::", cfg.Inbounds[0].Listen)
+	}
+}
+
+// DetectListen must answer with something bindable on this host, whatever it
+// reports: a node that refuses to start is worse than one serving IPv4 only.
+func TestDetectListenIsBindable(t *testing.T) {
+	addr := DetectListen()
+	if addr != "::" && addr != "0.0.0.0" {
+		t.Fatalf("DetectListen() = %q", addr)
+	}
+	l, err := net.Listen("tcp", net.JoinHostPort(addr, "0"))
+	if err != nil {
+		t.Fatalf("DetectListen() returned %q, which does not bind: %v", addr, err)
+	}
+	_ = l.Close()
 }

@@ -106,7 +106,7 @@ func TestInviteGrantArgument(t *testing.T) {
 func testEnv(t *testing.T, applied error) *env {
 	t.Helper()
 	store := vless.New(t.TempDir())
-	node, err := vless.NewNode("203.0.113.10", "", "", "", "", 0)
+	node, err := vless.NewNode("203.0.113.10", "", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}

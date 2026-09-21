@@ -82,6 +82,9 @@ case "$(uname -m)" in
   *) echo "unsupported architecture $(uname -m) — only amd64 and arm64 are pinned here" >&2; exit 1 ;;
 esac
 
+here_early="$(cd "$(dirname "$0")" && pwd)"
+raw_early="https://raw.githubusercontent.com/$REPO/$REF/packaging/server"
+
 say "packages"
 missing=""
 for pkg in curl unzip; do
@@ -165,12 +168,33 @@ if id "$BOT_USER" >/dev/null 2>&1; then
   fi
 fi
 
+say "apply helper"
+apply_dir="/usr/local/lib/vpn-xray"
+apply_src="$here_early/apply-config.sh"
+if [ ! -f "$apply_src" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "    would fetch apply-config.sh from $raw_early"
+  else
+    say "fetching apply-config.sh"
+    apply_src="$tmp/apply-config.sh"
+    curl -fsSL -o "$apply_src" "$raw_early/apply-config.sh"
+  fi
+fi
+if [ "$DRY_RUN" = 1 ]; then
+  echo "    would install $apply_dir/apply-config.sh"
+elif cmp -s "$apply_src" "$apply_dir/apply-config.sh"; then
+  skip "apply-config.sh up to date"
+else
+  run install -d -m 0755 "$apply_dir"
+  run install -m 0755 "$apply_src" "$apply_dir/apply-config.sh"
+fi
+
 say "units"
-here="$(cd "$(dirname "$0")" && pwd)"
+here="$here_early"
 # Fetch the units when this script was downloaded on its own rather than copied
 # with the repo — the same thing provision.sh does for the NAT helpers, because
 # "curl one file and run it" is how these scripts actually reach a node.
-raw="https://raw.githubusercontent.com/$REPO/$REF/packaging/server"
+raw="$raw_early"
 reload=0
 for unit in vpn-xray.service vpn-xray-reload.service vpn-xray-reload.path; do
   src="$here/$unit"
