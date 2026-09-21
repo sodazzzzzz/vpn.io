@@ -119,6 +119,7 @@ sudo make run-client CLIENT_NAME=alice SERVER=127.0.0.1:8443 SERVER_NAME=localho
 
 - [INSTALL.md](docs/INSTALL.md) — установка клиента (Windows / macOS / Linux)
 - [SERVER.md](docs/SERVER.md) — развёртывание сервера
+- [VLESS.md](docs/VLESS.md) — второй сервис на той же ноде: VLESS/REALITY для сторонних клиентов (Happ и др.)
 - [CA-RECOVERY.md](docs/CA-RECOVERY.md) — резервная копия CA и восстановление
 - [SECURITY-KEYS.md](docs/SECURITY-KEYS.md) — какие есть ключи, где лежат, как ротируются
 - [THREAT-MODEL.md](docs/THREAT-MODEL.md) — от чего защищает и от чего нет

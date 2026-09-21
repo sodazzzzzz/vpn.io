@@ -10,6 +10,11 @@ file — and, optionally, the app installer for their OS (see `-installers`).
   friend ──token──▶ bot ──issue-client + bundle──▶ alice.vpnio (+ installer) ──▶ friend ──▶ imports in the app
 ```
 
+On a node that also runs the VLESS/REALITY service, an invite can hand over a
+`vless://` link instead of (or alongside) the profile — `/invite alice vless`.
+That half is documented in [VLESS.md](VLESS.md); everything below is the same
+either way.
+
 ## ⚠️ Trust trade-off (read this)
 
 The bot **signs client certificates**, so it needs `ca.key`. Running it
