@@ -67,9 +67,10 @@ const shortIDBytes = 8
 type Node struct {
 	Address     string   `json:"address"`
 	Port        int      `json:"port"`
-	PrivateKey  string   `json:"privateKey"` // base64url, node-only — never in a link
-	PublicKey   string   `json:"publicKey"`  // base64url, travels in every link
-	Dest        string   `json:"dest"`       // host:port of the impersonated site
+	Label       string   `json:"label,omitempty"` // what client apps show this node as
+	PrivateKey  string   `json:"privateKey"`      // base64url, node-only — never in a link
+	PublicKey   string   `json:"publicKey"`       // base64url, travels in every link
+	Dest        string   `json:"dest"`            // host:port of the impersonated site
 	ServerNames []string `json:"serverNames"`
 	Fingerprint string   `json:"fingerprint"`
 }
@@ -93,7 +94,7 @@ type Client struct {
 
 // NewNode generates a fresh REALITY identity for address. Empty dest,
 // serverName or fingerprint take the defaults above.
-func NewNode(address, dest, serverName, fingerprint string, port int) (Node, error) {
+func NewNode(address, dest, serverName, fingerprint, label string, port int) (Node, error) {
 	if strings.TrimSpace(address) == "" {
 		return Node{}, fmt.Errorf("vless: node address is required")
 	}
@@ -119,6 +120,7 @@ func NewNode(address, dest, serverName, fingerprint string, port int) (Node, err
 	n := Node{
 		Address:     address,
 		Port:        port,
+		Label:       label,
 		PrivateKey:  priv,
 		PublicKey:   pub,
 		Dest:        dest,

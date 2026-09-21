@@ -7,6 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/govpn/internal/filelock"
 )
 
 // DefaultDir is where a node keeps its VLESS state. The directory itself is
@@ -171,4 +174,165 @@ func readFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("vless: %q is too large (over %d bytes)", path, maxFileBytes)
 	}
 	return data, nil
+}
+
+// Clients reads clients.json. A missing file means "nobody yet", which is the
+// normal state of a freshly initialised node.
+func (s *Store) Clients() ([]Client, error) {
+	data, err := readFile(s.ClientsPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var f struct {
+		Clients []Client `json:"clients"`
+	}
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("vless: parse %q: %w", s.ClientsPath(), err)
+	}
+	for _, c := range f.Clients {
+		if err := c.Validate(); err != nil {
+			return nil, fmt.Errorf("%w (in %s)", err, s.ClientsPath())
+		}
+	}
+	return f.Clients, nil
+}
+
+// Find returns the client issued to name, matched case-insensitively — the same
+// person typed two ways is still one person.
+func (s *Store) Find(name string) (Client, bool, error) {
+	clients, err := s.Clients()
+	if err != nil {
+		return Client{}, false, err
+	}
+	for _, c := range clients {
+		if strings.EqualFold(c.Name, name) {
+			return c, true, nil
+		}
+	}
+	return Client{}, false, nil
+}
+
+// Add issues access for name and re-renders the config.
+//
+// It refuses a name that already has access rather than silently issuing a
+// second credential: two live UUIDs for one person means revoking them takes
+// two acts, and the one nobody remembers stays valid.
+//
+// The client list and the config are written under a cross-process lock, so the
+// bot adding someone and an operator running the CLI cannot lose each other's
+// update. The caller restarts the service afterwards — see Apply.
+func (s *Store) Add(name string) (Client, error) {
+	lock, err := filelock.Acquire(s.ClientsPath())
+	if err != nil {
+		return Client{}, err
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	node, err := s.LoadNode()
+	if err != nil {
+		return Client{}, err
+	}
+	clients, err := s.Clients()
+	if err != nil {
+		return Client{}, err
+	}
+	for _, c := range clients {
+		if strings.EqualFold(c.Name, name) {
+			return Client{}, fmt.Errorf("vless: %q already has access (revoke it first to reissue)", c.Name)
+		}
+	}
+	c, err := NewClient(name)
+	if err != nil {
+		return Client{}, err
+	}
+	if err := s.saveClients(node, append(clients, c)); err != nil {
+		return Client{}, err
+	}
+	return c, nil
+}
+
+// Remove revokes name's access and re-renders the config. It reports whether
+// anything was removed: revoking someone who has no VLESS access is not an
+// error, it just means that person only ever had the other service.
+func (s *Store) Remove(name string) (bool, error) {
+	lock, err := filelock.Acquire(s.ClientsPath())
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	node, err := s.LoadNode()
+	if err != nil {
+		return false, err
+	}
+	clients, err := s.Clients()
+	if err != nil {
+		return false, err
+	}
+	kept := make([]Client, 0, len(clients))
+	for _, c := range clients {
+		if !strings.EqualFold(c.Name, name) {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(clients) {
+		return false, nil
+	}
+	if err := s.saveClients(node, kept); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Render rewrites config.json from the current node and client list. It exists
+// for the case where the config was lost or hand-edited: the client list is the
+// source of truth, the config is derived from it.
+func (s *Store) Render() error {
+	lock, err := filelock.Acquire(s.ClientsPath())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	node, err := s.LoadNode()
+	if err != nil {
+		return err
+	}
+	clients, err := s.Clients()
+	if err != nil {
+		return err
+	}
+	return s.WriteConfig(node, clients)
+}
+
+// saveClients writes the client list and the config it implies.
+//
+// Order matters: the config is rendered first (in memory, by WriteConfig) and
+// the list is only written once that succeeded — but the list lands first on
+// disk, so a crash between the two leaves a node whose recorded access is ahead
+// of its running config. That direction is recoverable with `vpn-vless render`;
+// the opposite (a config granting access the list does not record) would be an
+// invisible credential.
+func (s *Store) saveClients(node Node, clients []Client) error {
+	data, err := json.MarshalIndent(struct {
+		Clients []Client `json:"clients"`
+	}{Clients: clients}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("vless: encode clients: %w", err)
+	}
+	// Render before touching anything, so a list that cannot produce a valid
+	// config is rejected with both files untouched.
+	if _, err := Config(node, clients); err != nil {
+		return err
+	}
+	if err := s.write(s.ClientsPath(), append(data, '\n')); err != nil {
+		return err
+	}
+	return s.WriteConfig(node, clients)
 }

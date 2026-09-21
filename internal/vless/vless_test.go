@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewNodeDefaults(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestNewNodeDefaults(t *testing.T) {
 }
 
 func TestNewNodeRequiresAddress(t *testing.T) {
-	if _, err := NewNode("  ", "", "", "", 0); err == nil {
+	if _, err := NewNode("  ", "", "", "", "", 0); err == nil {
 		t.Fatal("NewNode accepted an empty address")
 	}
 }
@@ -40,7 +40,7 @@ func TestNewNodeRequiresAddress(t *testing.T) {
 // The public key in every link must be the one derived from the private key we
 // keep, or clients negotiate against a key the node cannot use.
 func TestKeypairMatches(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestKeypairMatches(t *testing.T) {
 }
 
 func TestNodeValidate(t *testing.T) {
-	good, err := NewNode("203.0.113.10", "", "", "", 0)
+	good, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestClientValidate(t *testing.T) {
 // Config is what Xray reads: check the fields REALITY cannot work without, and
 // the two privacy choices we made deliberately.
 func TestConfig(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestConfig(t *testing.T) {
 }
 
 func TestConfigRejectsBrokenClient(t *testing.T) {
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestStoreNodeRoundTrip(t *testing.T) {
 		t.Fatalf("LoadNode on a fresh dir = %v, want ErrNoNode", err)
 	}
 
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -266,14 +266,14 @@ func TestStoreNodeRoundTrip(t *testing.T) {
 // private key, so an accidental second init would cut everyone off.
 func TestSaveNodeRefusesOverwrite(t *testing.T) {
 	s := New(t.TempDir())
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
 	if err := s.SaveNode(n); err != nil {
 		t.Fatalf("SaveNode: %v", err)
 	}
-	other, err := NewNode("203.0.113.11", "", "", "", 0)
+	other, err := NewNode("203.0.113.11", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSaveNodeRefusesOverwrite(t *testing.T) {
 func TestWriteConfigPermissionsAndAtomicity(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	n, err := NewNode("203.0.113.10", "", "", "", 0)
+	n, err := NewNode("203.0.113.10", "", "", "", "", 0)
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
