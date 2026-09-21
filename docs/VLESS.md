@@ -62,17 +62,37 @@ Two consequences of one node are worth accepting deliberately:
 
 ## Install
 
-On the node, as root:
+On the node, as root. First make sure the updater is current — a node updated
+before this service existed has a `vpn-update` that knows nothing about
+`vpn-vless` (long URLs get mangled when pasted into a terminal, so build it from
+short pieces):
 
 ```bash
-bash packaging/server/install-xray.sh
+U=https://raw.githubusercontent.com/sodazzzzzz/vpn.io
+curl -fL "$U/main/packaging/server/vpn-update.sh" -o /usr/local/sbin/vpn-update
+chmod +x /usr/local/sbin/vpn-update
+```
+
+Then install the service itself:
+
+```bash
+curl -fL "$U/main/packaging/server/install-xray.sh" -o install-xray.sh
+bash install-xray.sh
 ```
 
 It installs a pinned, checksummed Xray-core release, the `vpn-xray` service user
 and unit, the reload units (see [Applying changes](#applying-changes)), and opens
-443/tcp in ufw. It does **not** start anything: there are no keys yet.
+443/tcp in ufw. Run standalone like this, it fetches the unit files it needs.
+It does **not** start anything: there are no keys yet.
 
-Then generate this node's REALITY identity:
+Now the node has `/etc/vpn-xray`, which is what tells the updater this node runs
+the service — so `vpn-vless` arrives with the next update:
+
+```bash
+vpn-update --force
+```
+
+Finally, generate this node's REALITY identity and start it:
 
 ```bash
 vpn-vless init -address vpn.example.com

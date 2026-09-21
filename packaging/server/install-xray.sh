@@ -5,7 +5,11 @@
 #
 #   sudo bash install-xray.sh
 #
+#   curl -fL <raw-url>/install-xray.sh -o install-xray.sh
+#   sudo bash install-xray.sh
+#
 # Options:
+#   --ref REF          branch or tag to fetch the unit files from (default: main)
 #   --skip-firewall    don't touch ufw
 #   --dry-run          print what would change and exit
 #
@@ -42,14 +46,17 @@ DATA_DIR="/usr/local/share/xray"
 BIN="/usr/local/bin/xray"
 LISTEN_PORT="443"
 
+REPO="sodazzzzzz/vpn.io"
+REF="main"
 SKIP_FIREWALL=0
 DRY_RUN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --ref)           REF="${2:?--ref needs a branch or tag}"; shift 2 ;;
     --skip-firewall) SKIP_FIREWALL=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
-    -h|--help)       sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -62,6 +69,12 @@ run()  { if [ "$DRY_RUN" = 1 ]; then echo "    would run: $*"; else "$@"; fi; }
 [ "$(uname -s)" = Linux ] || { echo "this installs a Linux node service (detected $(uname -s))" >&2; exit 1; }
 command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
 command -v apt-get   >/dev/null || { echo "this script targets Debian/Ubuntu (apt-get not found)" >&2; exit 1; }
+
+# One scratch directory for everything this script downloads, removed on any
+# exit. (Two traps would not do: the second replaces the first and leaks the
+# first directory.)
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
 case "$(uname -m)" in
   x86_64|amd64)  asset="Xray-linux-64.zip";          want="$XRAY_SHA256_AMD64" ;;
@@ -93,8 +106,6 @@ if [ "$installed" = "${XRAY_VERSION#v}" ]; then
 elif [ "$DRY_RUN" = 1 ]; then
   echo "    would download and verify $asset, then install $BIN"
 else
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
   curl -fSL --retry 3 -o "$tmp/$asset" \
     "https://github.com/XTLS/Xray-core/releases/download/$XRAY_VERSION/$asset"
   # Fail closed: a mismatch means the bytes are not the release we pinned, and
@@ -156,10 +167,22 @@ fi
 
 say "units"
 here="$(cd "$(dirname "$0")" && pwd)"
+# Fetch the units when this script was downloaded on its own rather than copied
+# with the repo — the same thing provision.sh does for the NAT helpers, because
+# "curl one file and run it" is how these scripts actually reach a node.
+raw="https://raw.githubusercontent.com/$REPO/$REF/packaging/server"
 reload=0
 for unit in vpn-xray.service vpn-xray-reload.service vpn-xray-reload.path; do
   src="$here/$unit"
-  [ -f "$src" ] || { echo "$unit not found next to this script" >&2; exit 1; }
+  if [ ! -f "$src" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      echo "    would fetch $unit from $raw"
+      continue
+    fi
+    say "fetching $unit"
+    src="$tmp/$unit"
+    curl -fsSL -o "$src" "$raw/$unit"
+  fi
   if cmp -s "$src" "/etc/systemd/system/$unit"; then
     skip "$unit up to date"
   else
@@ -202,6 +225,7 @@ Xray-core is installed but NOT started: this node has no REALITY config yet.
 
 Generate one (keys stay on this node — they are not part of any release):
 
+    vpn-update --force                 # brings vpn-vless onto this node
     vpn-vless init -address <this-node-public-address>
 
 Then add someone and start the service:
