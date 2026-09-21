@@ -57,7 +57,7 @@ func TestPruneExpired(t *testing.T) {
 func TestRedeemRejectsExpired(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
 	s.TTL = time.Nanosecond // anything issued is expired almost immediately
-	tok, err := s.Generate("alice")
+	tok, err := s.Generate("alice", GrantProfile)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -71,12 +71,12 @@ func TestRedeemRejectsExpired(t *testing.T) {
 func TestGeneratePrunesExpiredUnused(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
 	s.TTL = time.Nanosecond
-	old, err := s.Generate("stale")
+	old, err := s.Generate("stale", GrantProfile)
 	if err != nil {
 		t.Fatalf("Generate stale: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
-	fresh, err := s.Generate("current")
+	fresh, err := s.Generate("current", GrantProfile)
 	if err != nil {
 		t.Fatalf("Generate current: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestGeneratePrunesExpiredUnused(t *testing.T) {
 func TestGenerateAndRedeem(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
 
-	tok, err := s.Generate("alice")
+	tok, err := s.Generate("alice", GrantProfile)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -104,12 +104,17 @@ func TestGenerateAndRedeem(t *testing.T) {
 		t.Fatalf("unexpected token: %+v", tok)
 	}
 
-	name, err := s.Redeem(tok.Value, "tg:123")
+	redeemed, err := s.Redeem(tok.Value, "tg:123")
 	if err != nil {
 		t.Fatalf("Redeem: %v", err)
 	}
-	if name != "alice" {
-		t.Errorf("client name = %q, want alice", name)
+	if redeemed.ClientName != "alice" {
+		t.Errorf("client name = %q, want alice", redeemed.ClientName)
+	}
+	// The value is spent — handing it back would only put a dead secret in the
+	// caller's logs.
+	if redeemed.Value != "" {
+		t.Error("Redeem returned the token value")
 	}
 
 	// A second redemption of the same token must fail (single-use).
@@ -120,7 +125,7 @@ func TestGenerateAndRedeem(t *testing.T) {
 
 func TestRedeemUnknownAndEmpty(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
-	if _, err := s.Generate("bob"); err != nil {
+	if _, err := s.Generate("bob", GrantProfile); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, err := s.Redeem("nope", "tg:1"); !errors.Is(err, ErrNotFound) {
@@ -133,7 +138,7 @@ func TestRedeemUnknownAndEmpty(t *testing.T) {
 
 func TestGenerateRequiresName(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
-	if _, err := s.Generate(""); err == nil {
+	if _, err := s.Generate("", GrantProfile); err == nil {
 		t.Fatal("expected error for empty client name")
 	}
 }
@@ -141,17 +146,17 @@ func TestGenerateRequiresName(t *testing.T) {
 func TestTokensPersistAcrossInstances(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 
-	tok, err := New(path).Generate("carol")
+	tok, err := New(path).Generate("carol", GrantProfile)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	// A fresh Store at the same path must see and redeem the token.
-	name, err := New(path).Redeem(tok.Value, "tg:9")
+	redeemed, err := New(path).Redeem(tok.Value, "tg:9")
 	if err != nil {
 		t.Fatalf("Redeem on fresh store: %v", err)
 	}
-	if name != "carol" {
-		t.Errorf("client name = %q, want carol", name)
+	if redeemed.ClientName != "carol" {
+		t.Errorf("client name = %q, want carol", redeemed.ClientName)
 	}
 }
 
@@ -159,7 +164,7 @@ func TestTokensAreUnique(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		tok, err := s.Generate("x")
+		tok, err := s.Generate("x", GrantProfile)
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
 		}
@@ -174,11 +179,11 @@ func TestTokensAreUnique(t *testing.T) {
 // owner's /invites (#108).
 func TestList(t *testing.T) {
 	s := New(filepath.Join(t.TempDir(), "tokens.json"))
-	a, err := s.Generate("alice")
+	a, err := s.Generate("alice", GrantProfile)
 	if err != nil {
 		t.Fatalf("Generate alice: %v", err)
 	}
-	if _, err := s.Generate("bob"); err != nil {
+	if _, err := s.Generate("bob", GrantProfile); err != nil {
 		t.Fatalf("Generate bob: %v", err)
 	}
 	if _, err := s.Redeem(a.Value, "tg:alice"); err != nil {
@@ -225,5 +230,57 @@ func TestExpired_ExportedWrapper(t *testing.T) {
 	}
 	if Expired(old, 0, now) {
 		t.Error("ttl=0 should disable expiry")
+	}
+}
+
+func TestGrants(t *testing.T) {
+	// A token minted before grants existed must keep meaning what it meant when
+	// it was handed out: a profile, not nothing and not everything.
+	var legacy Token
+	if got := legacy.Grants(); got != GrantProfile {
+		t.Errorf("legacy token grants %q, want %q", got, GrantProfile)
+	}
+	if !legacy.Grants().Profile() || legacy.Grants().VLESS() {
+		t.Error("legacy token does not grant exactly a profile")
+	}
+
+	for _, tc := range []struct {
+		in              string
+		want            Grant
+		profile, vlessB bool
+	}{
+		{"", GrantProfile, true, false},
+		{"profile", GrantProfile, true, false},
+		{"VLESS", GrantVLESS, false, true},
+		{" both ", GrantBoth, true, true},
+	} {
+		got, err := ParseGrant(tc.in)
+		if err != nil {
+			t.Fatalf("ParseGrant(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("ParseGrant(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if got.Profile() != tc.profile || got.VLESS() != tc.vlessB {
+			t.Errorf("%q covers profile=%v vless=%v", got, got.Profile(), got.VLESS())
+		}
+	}
+	if _, err := ParseGrant("everything"); err == nil {
+		t.Error("ParseGrant accepted an unknown grant")
+	}
+}
+
+func TestGenerateStoresGrant(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "tokens.json"))
+	tok, err := s.Generate("anna", GrantVLESS)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	redeemed, err := s.Redeem(tok.Value, "tg:1")
+	if err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	if redeemed.Grants() != GrantVLESS {
+		t.Errorf("grant = %q, want %q", redeemed.Grants(), GrantVLESS)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,11 +37,46 @@ const maxStoreBytes = 4 << 20
 // override, or 0 to disable expiry.
 const DefaultInviteTTL = 7 * 24 * time.Hour
 
-// Token is a one-time invite. Redeeming it issues a client certificate for
-// ClientName.
+// Grant is what redeeming a token hands over. A node can run two services side
+// by side — the certificate-based one our app speaks, and VLESS/REALITY for
+// third-party clients — and not everyone needs both: a phone has no app to
+// import a profile into, a desktop user may never touch Happ.
+//
+// The zero value is deliberate. Tokens minted before this existed carry no
+// grant, and they must keep meaning what they meant when they were handed
+// out — a profile. See Token.Grants.
+type Grant string
+
+const (
+	GrantProfile Grant = "profile" // .vpnio bundle for the vpn.io app
+	GrantVLESS   Grant = "vless"   // vless:// link for Happ and friends
+	GrantBoth    Grant = "both"
+)
+
+// ParseGrant maps operator input to a Grant. It is lenient about case and
+// accepts the empty string as "profile", matching the default.
+func ParseGrant(s string) (Grant, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", string(GrantProfile):
+		return GrantProfile, nil
+	case string(GrantVLESS):
+		return GrantVLESS, nil
+	case string(GrantBoth):
+		return GrantBoth, nil
+	}
+	return "", fmt.Errorf("invite: unknown grant %q (want profile, vless or both)", s)
+}
+
+// Profile and VLESS report which credentials this grant covers.
+func (g Grant) Profile() bool { return g == GrantProfile || g == GrantBoth || g == "" }
+func (g Grant) VLESS() bool   { return g == GrantVLESS || g == GrantBoth }
+
+// Token is a one-time invite. Redeeming it issues the credentials named by its
+// grant to ClientName.
 type Token struct {
 	Value      string    `json:"value"`
 	ClientName string    `json:"clientName"`
+	Grant      Grant     `json:"grant,omitempty"`
 	Used       bool      `json:"used"`
 	UsedBy     string    `json:"usedBy,omitempty"` // Telegram identifier, for audit
 	Created    time.Time `json:"created"`
@@ -67,11 +103,24 @@ type Store struct {
 // DefaultInviteTTL. Set the returned Store's TTL to override (0 disables expiry).
 func New(path string) *Store { return &Store{Path: path, TTL: DefaultInviteTTL} }
 
-// Generate creates a fresh single-use token for clientName, persists it, and
-// returns it.
-func (s *Store) Generate(clientName string) (Token, error) {
+// Grants is the grant to act on: the stored one, or GrantProfile for a token
+// that predates grants. Callers use this rather than the field, so an old token
+// never silently turns into something else.
+func (t Token) Grants() Grant {
+	if t.Grant == "" {
+		return GrantProfile
+	}
+	return t.Grant
+}
+
+// Generate creates a fresh single-use token for clientName covering grant,
+// persists it, and returns it.
+func (s *Store) Generate(clientName string, grant Grant) (Token, error) {
 	if clientName == "" {
 		return Token{}, errors.New("invite: client name required")
+	}
+	if grant == "" {
+		grant = GrantProfile
 	}
 	value, err := randomToken()
 	if err != nil {
@@ -97,7 +146,7 @@ func (s *Store) Generate(clientName string) (Token, error) {
 	// they can't be redeemed again and are just dead weight. Used tokens stay as
 	// the audit trail.
 	f.Tokens = pruneExpired(f.Tokens, s.TTL, now)
-	tok := Token{Value: value, ClientName: clientName, Created: now}
+	tok := Token{Value: value, ClientName: clientName, Grant: grant, Created: now}
 	f.Tokens = append(f.Tokens, tok)
 	if err := s.saveLocked(f); err != nil {
 		return Token{}, err
@@ -131,23 +180,23 @@ func Expired(t Token, ttl time.Duration, now time.Time) bool {
 }
 
 // Redeem marks the token with the given value used (recording usedBy for audit)
-// and returns the client name to issue. It returns ErrNotFound when no unused
-// token matches, so an already-redeemed or unknown value can't issue a second
-// credential.
-func (s *Store) Redeem(value, usedBy string) (clientName string, err error) {
+// and returns it, so the caller knows both who to issue for and what to issue.
+// It returns ErrNotFound when no unused token matches, so an already-redeemed or
+// unknown value can't issue a second credential.
+func (s *Store) Redeem(value, usedBy string) (Token, error) {
 	if value == "" {
-		return "", ErrNotFound
+		return Token{}, ErrNotFound
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	lock, err := filelock.Acquire(s.Path)
 	if err != nil {
-		return "", err
+		return Token{}, err
 	}
 	defer func() { _ = lock.Unlock() }()
 	f, err := s.loadLocked()
 	if err != nil {
-		return "", err
+		return Token{}, err
 	}
 	now := time.Now()
 	valueBytes := []byte(value)
@@ -164,14 +213,17 @@ func (s *Store) Redeem(value, usedBy string) (clientName string, err error) {
 			t.Used = true
 			t.UsedBy = usedBy
 			t.UsedAt = now
-			name := t.ClientName
+			redeemed := *t
 			if err := s.saveLocked(f); err != nil {
-				return "", err
+				return Token{}, err
 			}
-			return name, nil
+			// The value is spent; handing it back would only put a dead secret
+			// in the caller's logs.
+			redeemed.Value = ""
+			return redeemed, nil
 		}
 	}
-	return "", ErrNotFound
+	return Token{}, ErrNotFound
 }
 
 func (s *Store) loadLocked() (fileFormat, error) {

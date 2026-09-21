@@ -35,6 +35,7 @@ import (
 	"github.com/govpn/internal/invite"
 	"github.com/govpn/internal/profile"
 	"github.com/govpn/internal/revoke"
+	"github.com/govpn/internal/vless"
 	"github.com/govpn/internal/watchdog"
 )
 
@@ -86,8 +87,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `vpn-bot — Telegram onboarding bot for govpn.
 
 Commands:
-  token -name NAME [-store FILE]
-        generate a one-time invite token for a client and print it
+  token -name NAME [-grant profile|vless|both] [-store FILE]
+        generate a one-time invite token for a client and print it.
+        The grant decides what redeeming it hands over: a profile for the
+        vpn.io app, a vless:// link for a third-party client, or both.
 
   list [-store FILE]
         list issued invites (name + status: PENDING/EXPIRED/used); no secrets
@@ -97,8 +100,11 @@ Commands:
         With -installers DIR, also offer the app installer for the user's OS
         (*.exe / *.pkg / *.deb found in DIR) via inline buttons.
         With -owner ID, that Telegram user can manage clients in-chat instead
-        of this CLI: /invite <name>, /invites, /revoke <name>, /unrevoke <name>,
-        /revoked. Anyone can /whoami to learn their own ID.
+        of this CLI: /invite <name> [profile|vless|both], /invites,
+        /revoke <name>, /unrevoke <name>, /revoked. Anyone can /whoami to
+        learn their own ID.
+        With -vless-dir DIR, invites can also hand out VLESS access on a node
+        that runs the second service; without it only profiles are issued.
         With -watch URL (needs -owner), also poll the node's health endpoint
         and message the owner when it stops serving clients — and when it
         recovers. See docs/BOT.md.
@@ -111,13 +117,18 @@ func cmdToken(args []string) error {
 	fs := flag.NewFlagSet("token", flag.ExitOnError)
 	name := fs.String("name", "", "client name to issue when the token is redeemed (required)")
 	storePath := fs.String("store", defaultStore, "invite token store file")
+	grantRaw := fs.String("grant", string(invite.GrantProfile), "what redeeming this token hands over: profile, vless or both")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := validateClientName(*name); err != nil {
 		return fmt.Errorf("-name: %w", err)
 	}
-	tok, err := invite.New(*storePath).Generate(*name)
+	grant, err := invite.ParseGrant(*grantRaw)
+	if err != nil {
+		return fmt.Errorf("-grant: %w", err)
+	}
+	tok, err := invite.New(*storePath).Generate(*name, grant)
 	if err != nil {
 		return err
 	}
@@ -171,6 +182,8 @@ func cmdServe(args []string) error {
 	installersDir := fs.String("installers", "", "directory with app installers (*.exe/*.pkg/*.deb) to offer after the profile; empty disables")
 	ownerID := fs.Int64("owner", 0, "Telegram user ID allowed to mint tokens with /invite (0 disables; send /whoami to the bot to find yours)")
 	inviteTTL := fs.Duration("invite-ttl", invite.DefaultInviteTTL, "how long an invite token stays redeemable after it's issued (0 = never expires)")
+	vlessDir := fs.String("vless-dir", "", "state directory of the node's VLESS service, e.g. "+vless.DefaultDir+" (empty = this node runs no VLESS service)")
+	vlessUnit := fs.String("vless-unit", vless.DefaultUnit, "systemd unit of the VLESS service, watched to confirm a change was applied")
 	watchURL := fs.String("watch", "", "vpn-server health endpoint to watch, e.g. http://127.0.0.1:9443/readyz (empty disables; requires -owner)")
 	watchEvery := fs.Duration("watch-interval", watchdog.DefaultInterval, "how often to poll -watch")
 	if err := fs.Parse(args); err != nil {
@@ -199,6 +212,15 @@ func cmdServe(args []string) error {
 	if *watchURL != "" && *ownerID == 0 {
 		return fmt.Errorf("-watch needs -owner: there is nobody to send an alert to")
 	}
+	// Fail fast on a VLESS directory that is not set up, rather than at the
+	// moment someone redeems an invite: the token is spent by then.
+	var vlessStore *vless.Store
+	if *vlessDir != "" {
+		vlessStore = vless.New(*vlessDir)
+		if _, err := vlessStore.LoadNode(); err != nil {
+			return fmt.Errorf("-vless-dir %q: %w", *vlessDir, err)
+		}
+	}
 	// Load the CA once: it holds ca.key in memory for signing, so we don't
 	// re-read the key on every onboarding (and we fail fast here if it's
 	// missing, before going online).
@@ -217,7 +239,21 @@ func cmdServe(args []string) error {
 	// store — so its read-modify-write stays serialized even if message handling
 	// is ever moved off the single main goroutine.
 	revoked := revoke.New(filepath.Join(authority.Dir, "revoked.json"))
+	e := &env{
+		authority:     authority,
+		invites:       store,
+		revoked:       revoked,
+		vless:         vlessStore,
+		vlessUnit:     *vlessUnit,
+		server:        *server,
+		serverName:    *serverName,
+		installersDir: *installersDir,
+		ownerID:       *ownerID,
+	}
 	log.Printf("vpn-bot online as @%s", bot.Self.UserName)
+	if vlessStore != nil {
+		log.Printf("VLESS access enabled from %s (unit %s)", vlessStore.Dir, *vlessUnit)
+	}
 
 	// Stop cleanly on SIGTERM / Interrupt (systemd stop). Messages are handled
 	// inline (one at a time), so an in-flight onboarding finishes before we exit.
@@ -303,7 +339,7 @@ func cmdServe(args []string) error {
 			if update.Message == nil || update.Message.From == nil {
 				continue
 			}
-			handleMessage(bot, store, revoked, authority, update.Message, *server, *serverName, *installersDir, *ownerID)
+			handleMessage(bot, e, update.Message)
 		}
 	}
 }
@@ -362,7 +398,32 @@ func pollUpdates(ctx context.Context, bot *tgbotapi.BotAPI, out chan<- tgbotapi.
 const helpText = "Send me your one-time invite token and I'll send back your vpn.io profile (.vpnio). " +
 	"Ask the owner for a token if you don't have one."
 
-func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.Store, authority *ca.CA, msg *tgbotapi.Message, server, serverName, installersDir string, ownerID int64) {
+// env is everything a message handler needs besides the message itself: the
+// stores it reads and writes, and the deployment's configuration. It exists
+// because the handlers grew a second service to hand out — passing nine
+// positional arguments through three call sites was already at the edge of
+// readable, and "which string was serverName again" is exactly the kind of
+// mistake that issues someone a profile pointing at the wrong node.
+type env struct {
+	authority *ca.CA
+	invites   *invite.Store
+	revoked   *revoke.Store
+	// vless is nil on a node that runs no VLESS service. Nil is the normal
+	// state, not a degraded one: the second service is optional, and a node
+	// without it must still onboard people to the first.
+	vless     *vless.Store
+	vlessUnit string
+
+	server        string
+	serverName    string
+	installersDir string
+	ownerID       int64
+}
+
+// vlessEnabled reports whether this node can hand out VLESS access.
+func (e *env) vlessEnabled() bool { return e.vless != nil }
+
+func handleMessage(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return
@@ -382,16 +443,16 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 		// private chat. Every other case (non-owner, or even the owner in a
 		// group) just gets the greeting — that neither prints a token nor
 		// reveals to a group who the owner is.
-		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
-			handleInvite(bot, store, msg)
+		if e.ownerID != 0 && msg.From.ID == e.ownerID && msg.Chat.IsPrivate() {
+			handleInvite(bot, e, msg)
 		} else {
 			reply(bot, msg.Chat.ID, helpText)
 		}
 		return
 	case "revoke", "unrevoke", "revoked":
 		// Same gate as /invite: owner only, private chat only.
-		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
-			handleRevokeCommand(bot, authority, revoked, msg)
+		if e.ownerID != 0 && msg.From.ID == e.ownerID && msg.Chat.IsPrivate() {
+			handleRevokeCommand(bot, e, msg)
 		} else {
 			reply(bot, msg.Chat.ID, helpText)
 		}
@@ -400,8 +461,8 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 		// Same owner-only, private-chat gate: the list names clients and their
 		// redemption status, so it stays out of groups — and never prints a token
 		// secret (see formatInviteList).
-		if ownerID != 0 && msg.From.ID == ownerID && msg.Chat.IsPrivate() {
-			handleInvitesCommand(bot, store, msg)
+		if e.ownerID != 0 && msg.From.ID == e.ownerID && msg.Chat.IsPrivate() {
+			handleInvitesCommand(bot, e.invites, msg)
 		} else {
 			reply(bot, msg.Chat.ID, helpText)
 		}
@@ -425,7 +486,7 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 
 	// Any other short text is treated as a candidate invite token.
 	who := userLabel(msg.From)
-	name, err := store.Redeem(text, who)
+	tok, err := e.invites.Redeem(text, who)
 	if err != nil {
 		if errors.Is(err, invite.ErrNotFound) {
 			reply(bot, msg.Chat.ID, "That invite is invalid or already used. Ask the owner for a new one.")
@@ -433,36 +494,44 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 			// A real store failure (disk, permissions) — the user's token may
 			// be fine, so don't call it invalid. Log it, tell the owner, apologise.
 			log.Printf("redeem token from %s: %v", who, err)
-			notifyOwner(bot, ownerID, "couldn't redeem an invite token from %s: %v", who, err)
-			reply(bot, msg.Chat.ID, ownerNotifiedText(ownerID, "Sorry — something went wrong on our side."))
+			notifyOwner(bot, e.ownerID, "couldn't redeem an invite token from %s: %v", who, err)
+			reply(bot, msg.Chat.ID, ownerNotifiedText(e.ownerID, "Sorry — something went wrong on our side."))
 		}
 		return
 	}
 
-	bundle, err := issueBundle(authority, name, server, serverName)
-	if err != nil {
-		// Don't leak internals to the user; log and tell the operator.
-		log.Printf("issue bundle for %q (%s): %v", name, who, err)
-		notifyOwner(bot, ownerID, "failed to issue a profile for %q (%s): %v", name, who, err)
-		reply(bot, msg.Chat.ID, ownerNotifiedText(ownerID, "Sorry — couldn't create your profile."))
-		return
+	name := tok.ClientName
+	grant := tok.Grants()
+
+	// A token that grants VLESS on a node that has none would spend the token
+	// and hand back nothing. Say so plainly and tell the owner: the token is
+	// already gone either way, and the person waiting deserves better than
+	// silence.
+	if grant.VLESS() && !e.vlessEnabled() {
+		log.Printf("token for %q grants VLESS but this node runs no VLESS service", name)
+		notifyOwner(bot, e.ownerID, "the invite for %q asked for VLESS access, but this node has no VLESS service configured", name)
+		if !grant.Profile() {
+			reply(bot, msg.Chat.ID, ownerNotifiedText(e.ownerID, "Sorry — that invite can't be completed here."))
+			return
+		}
 	}
 
-	doc := tgbotapi.NewDocument(msg.Chat.ID, tgbotapi.FileBytes{Name: name + ".vpnio", Bytes: bundle})
-	doc.Caption = "Your vpn.io profile. In the app choose \"Import a profile file\" and pick this file."
-	if _, err := bot.Send(doc); err != nil {
-		// The token is already spent and the cert issued, so don't leave the
-		// user with silence — tell them; the owner can re-issue if needed.
-		log.Printf("send profile to %s: %v", who, err)
-		notifyOwner(bot, ownerID, "issued %q to %s but couldn't deliver the file: %v", name, who, err)
-		reply(bot, msg.Chat.ID, "Your profile was created but I couldn't send the file — please contact the owner.")
-		return
+	if grant.Profile() {
+		if !issueProfile(bot, e, msg, name, who) {
+			return
+		}
 	}
-	log.Printf("issued profile %q to %s", name, who)
+	if grant.VLESS() && e.vlessEnabled() {
+		if !issueVLESS(bot, e, msg, name, who) {
+			return
+		}
+	}
 
-	// Offer the app installer for the user's OS, if any are configured.
-	if installersDir != "" {
-		if kb, ok := installerKeyboard(installersDir); ok {
+	// Offer the app installer for the user's OS, if any are configured. Only
+	// for a profile: someone who was handed a link uses a third-party client,
+	// and our installer is not what they need.
+	if grant.Profile() && e.installersDir != "" {
+		if kb, ok := installerKeyboard(e.installersDir); ok {
 			m := tgbotapi.NewMessage(msg.Chat.ID, "Now grab the vpn.io app for your system:")
 			m.ReplyMarkup = kb
 			if _, err := bot.Send(m); err != nil {
@@ -472,6 +541,89 @@ func handleMessage(bot *tgbotapi.BotAPI, store *invite.Store, revoked *revoke.St
 	}
 }
 
+// issueProfile issues a client certificate bundle and sends it. It reports
+// whether the user was served; a false return means the failure has already
+// been reported to both the user and the owner.
+func issueProfile(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message, name, who string) bool {
+	bundle, err := issueBundle(e.authority, name, e.server, e.serverName)
+	if err != nil {
+		// Don't leak internals to the user; log and tell the operator.
+		log.Printf("issue bundle for %q (%s): %v", name, who, err)
+		notifyOwner(bot, e.ownerID, "failed to issue a profile for %q (%s): %v", name, who, err)
+		reply(bot, msg.Chat.ID, ownerNotifiedText(e.ownerID, "Sorry — couldn't create your profile."))
+		return false
+	}
+
+	doc := tgbotapi.NewDocument(msg.Chat.ID, tgbotapi.FileBytes{Name: name + ".vpnio", Bytes: bundle})
+	doc.Caption = "Your vpn.io profile. In the app choose \"Import a profile file\" and pick this file."
+	if _, err := bot.Send(doc); err != nil {
+		// The token is already spent and the cert issued, so don't leave the
+		// user with silence — tell them; the owner can re-issue if needed.
+		log.Printf("send profile to %s: %v", who, err)
+		notifyOwner(bot, e.ownerID, "issued %q to %s but couldn't deliver the file: %v", name, who, err)
+		reply(bot, msg.Chat.ID, "Your profile was created but I couldn't send the file — please contact the owner.")
+		return false
+	}
+	log.Printf("issued profile %q to %s", name, who)
+	return true
+}
+
+// issueVLESS adds the person to the node's VLESS client list and sends them
+// their link. Like issueProfile it reports whether the user was served.
+//
+// The link is sent BEFORE the service finishes restarting, and the wait for the
+// restart happens after. That order is deliberate: the credential is real the
+// moment it is written, the restart only makes the node honour it, and a person
+// staring at a chat for thirty seconds while systemd works is worse than one
+// whose link needs a second attempt.
+func issueVLESS(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message, name, who string) bool {
+	client, err := e.vless.Add(name)
+	if err != nil {
+		log.Printf("add VLESS client %q (%s): %v", name, who, err)
+		notifyOwner(bot, e.ownerID, "failed to add VLESS access for %q (%s): %v", name, who, err)
+		reply(bot, msg.Chat.ID, ownerNotifiedText(e.ownerID, "Sorry — couldn't create your access."))
+		return false
+	}
+	node, err := e.vless.LoadNode()
+	if err != nil {
+		log.Printf("load VLESS node for %q: %v", name, err)
+		notifyOwner(bot, e.ownerID, "added VLESS access for %q but couldn't build the link: %v", name, err)
+		reply(bot, msg.Chat.ID, ownerNotifiedText(e.ownerID, "Sorry — couldn't create your access."))
+		return false
+	}
+	link, err := vless.Link(node, client)
+	if err != nil {
+		log.Printf("build VLESS link for %q: %v", name, err)
+		notifyOwner(bot, e.ownerID, "added VLESS access for %q but couldn't build the link: %v", name, err)
+		reply(bot, msg.Chat.ID, ownerNotifiedText(e.ownerID, "Sorry — couldn't create your access."))
+		return false
+	}
+
+	// The link IS the access, so it goes out exactly like the .vpnio bundle:
+	// this chat is already known to be private (see redeemableChat).
+	reply(bot, msg.Chat.ID, vlessInstructions)
+	reply(bot, msg.Chat.ID, link)
+	log.Printf("issued VLESS access %q to %s", name, who)
+
+	// Writing the client list is not the same as the node honouring it: the
+	// restart happens out of our hands (see internal/vless.WaitApplied). If it
+	// does not come back, the person is holding a link that silently does
+	// nothing — and the only one who can fix that is the owner.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := vless.WaitApplied(ctx, e.vlessUnit); err != nil {
+		log.Printf("VLESS service did not apply the change for %q: %v", name, err)
+		notifyOwner(bot, e.ownerID, "added VLESS access for %q, but the service did not come back: %v", name, err)
+		reply(bot, msg.Chat.ID, "Your access is created. If it doesn't connect within a minute, tell the owner — they've been notified.")
+	}
+	return true
+}
+
+// vlessInstructions is what a person needs to know before the link arrives.
+const vlessInstructions = "Your VLESS access. Copy the link below, open Happ (or another VLESS client) " +
+	"and add it — most clients pick the link up from the clipboard on their \"add server\" screen.\n\n" +
+	"Keep it to yourself: this link is the access."
+
 // redeemableChat reports whether a chat may redeem an invite token. Only a
 // private (one-to-one) chat qualifies, because redemption hands back the
 // client's private key — see the call site.
@@ -479,23 +631,55 @@ func redeemableChat(chat *tgbotapi.Chat) bool {
 	return chat != nil && chat.IsPrivate()
 }
 
-// handleInvite mints a one-time token from an owner's "/invite <name>" and
-// replies with it. The caller has already verified the sender is the owner.
-func handleInvite(bot *tgbotapi.BotAPI, store *invite.Store, msg *tgbotapi.Message) {
-	name := strings.TrimSpace(msg.CommandArguments())
-	if err := validateClientName(name); err != nil {
-		reply(bot, msg.Chat.ID, "Can't use that name ("+err.Error()+"). Usage: /invite <client-name>")
+// inviteUsage is shown whenever /invite is called with something unusable.
+const inviteUsage = "Usage: /invite <client-name> [profile|vless|both]"
+
+// handleInvite mints a one-time token from an owner's "/invite <name> [grant]"
+// and replies with it. The caller has already verified the sender is the owner.
+//
+// The grant decides what the person gets when they redeem: a profile for our
+// app, a VLESS link for a third-party client, or both. It is chosen here, when
+// the owner knows who they are inviting and what device that person has —
+// nobody wants to answer that question in a chat with the friend later.
+func handleInvite(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
+	name, grantRaw, _ := strings.Cut(strings.TrimSpace(msg.CommandArguments()), " ")
+	if err := validateClientName(strings.TrimSpace(name)); err != nil {
+		reply(bot, msg.Chat.ID, "Can't use that name ("+err.Error()+"). "+inviteUsage)
 		return
 	}
-	tok, err := store.Generate(name)
+	name = strings.TrimSpace(name)
+	grant, err := invite.ParseGrant(grantRaw)
+	if err != nil {
+		reply(bot, msg.Chat.ID, err.Error()+". "+inviteUsage)
+		return
+	}
+	// Minting a token for something this node cannot deliver only produces a
+	// disappointed friend later, when the token is already spent.
+	if grant.VLESS() && !e.vlessEnabled() {
+		reply(bot, msg.Chat.ID, "This node has no VLESS service configured, so I can't issue that. See docs/VLESS.md.")
+		return
+	}
+	tok, err := e.invites.Generate(name, grant)
 	if err != nil {
 		log.Printf("/invite generate %q: %v", name, err)
 		reply(bot, msg.Chat.ID, "Couldn't generate a token — check the logs.")
 		return
 	}
 	// Audit: a minted token is a credential, like an issued profile.
-	log.Printf("minted invite token for %q via /invite from %s", name, userLabel(msg.From))
-	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, tok.Value))
+	log.Printf("minted invite token for %q (%s) via /invite from %s", name, grant, userLabel(msg.From))
+	reply(bot, msg.Chat.ID, fmt.Sprintf("Invite token for %q — %s (single-use):\n\n%s\n\nSend it to the person; they message it to me.", name, grantText(grant), tok.Value))
+}
+
+// grantText says what a grant means in words the owner reads at a glance.
+func grantText(g invite.Grant) string {
+	switch g {
+	case invite.GrantVLESS:
+		return "VLESS link for third-party clients"
+	case invite.GrantBoth:
+		return "app profile + VLESS link"
+	default:
+		return "app profile"
+	}
 }
 
 // handleInvitesCommand answers the owner's /invites with the list of issued
@@ -527,11 +711,11 @@ func formatInviteList(tokens []invite.Token, ttl time.Duration, now time.Time) s
 			if who == "" {
 				who = "unknown"
 			}
-			fmt.Fprintf(&b, "• %s — used by %s on %s\n", t.ClientName, who, t.UsedAt.Format("2006-01-02"))
+			fmt.Fprintf(&b, "• %s [%s] — used by %s on %s\n", t.ClientName, t.Grants(), who, t.UsedAt.Format("2006-01-02"))
 		case invite.Expired(t, ttl, now):
-			fmt.Fprintf(&b, "• %s — EXPIRED (issued %s)\n", t.ClientName, t.Created.Format("2006-01-02"))
+			fmt.Fprintf(&b, "• %s [%s] — EXPIRED (issued %s)\n", t.ClientName, t.Grants(), t.Created.Format("2006-01-02"))
 		default:
-			fmt.Fprintf(&b, "• %s — PENDING (issued %s)\n", t.ClientName, t.Created.Format("2006-01-02"))
+			fmt.Fprintf(&b, "• %s [%s] — PENDING (issued %s)\n", t.ClientName, t.Grants(), t.Created.Format("2006-01-02"))
 		}
 	}
 	return b.String()
@@ -540,7 +724,8 @@ func formatInviteList(tokens []invite.Token, ttl time.Duration, now time.Time) s
 // handleRevokeCommand serves the owner's /revoke, /unrevoke and /revoked against
 // the same revoked.json the server enforces. The caller has verified the sender
 // is the owner and the chat is private.
-func handleRevokeCommand(bot *tgbotapi.BotAPI, authority *ca.CA, store *revoke.Store, msg *tgbotapi.Message) {
+func handleRevokeCommand(bot *tgbotapi.BotAPI, e *env, msg *tgbotapi.Message) {
+	authority, store := e.authority, e.revoked
 	if msg.Command() == "revoked" {
 		entries, err := store.List()
 		if err != nil {

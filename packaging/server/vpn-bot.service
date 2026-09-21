@@ -20,6 +20,11 @@ EnvironmentFile=/etc/vpn-bot/bot.env
 # node stops serving clients (and when it recovers). It needs -owner set, and
 # the server's VPN_HEALTH_LISTEN to match this address; drop the line to
 # disable. See docs/BOT.md.
+# -vless-dir enables handing out VLESS access from this node's second service
+# (see docs/VLESS.md). Uncomment it after running install-xray.sh and
+# `vpn-vless init`; the bot must be in the vpn-xray group, which install-xray.sh
+# arranges. Without it the bot only issues app profiles.
+#    -vless-dir /etc/vpn-xray \
 ExecStart=/usr/local/bin/vpn-bot serve \
     -dir /etc/vpn-bot/ca-data \
     -server 203.0.113.5:8443 \

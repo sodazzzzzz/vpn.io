@@ -21,9 +21,11 @@ func TestFormatInviteList(t *testing.T) {
 	}
 
 	tokens := []invite.Token{
+		// No grant: a token minted before grants existed, shown as what it has
+		// always meant.
 		{Value: "SECRET-ALICE", ClientName: "alice", Created: now.Add(-10 * time.Minute)},
-		{Value: "SECRET-BOB", ClientName: "bob", Used: true, UsedBy: "carol (id 7)", UsedAt: now, Created: now.Add(-2 * time.Hour)},
-		{Value: "SECRET-DAVE", ClientName: "dave", Created: now.Add(-2 * time.Hour)}, // past ttl → EXPIRED
+		{Value: "SECRET-BOB", ClientName: "bob", Grant: invite.GrantVLESS, Used: true, UsedBy: "carol (id 7)", UsedAt: now, Created: now.Add(-2 * time.Hour)},
+		{Value: "SECRET-DAVE", ClientName: "dave", Grant: invite.GrantBoth, Created: now.Add(-2 * time.Hour)}, // past ttl → EXPIRED
 	}
 	got := formatInviteList(tokens, ttl, now)
 
@@ -32,7 +34,14 @@ func TestFormatInviteList(t *testing.T) {
 			t.Fatalf("output leaked a token value %q:\n%s", secret, got)
 		}
 	}
-	for _, want := range []string{"Issued invites (3)", "alice — PENDING", "bob — used by carol (id 7)", "dave — EXPIRED"} {
+	// The grant is part of the line: the owner reading this list needs to know
+	// what each invite hands over, not just to whom.
+	for _, want := range []string{
+		"Issued invites (3)",
+		"alice [profile] — PENDING",
+		"bob [vless] — used by carol (id 7)",
+		"dave [both] — EXPIRED",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
 		}
@@ -59,5 +68,32 @@ func TestRedeemableChatOnlyPrivate(t *testing.T) {
 	}
 	if redeemableChat(nil) {
 		t.Error("redeemableChat(nil) = true, want false")
+	}
+}
+
+// The owner chooses what an invite hands over when they mint it. Parsing that
+// choice is the only place a typo can quietly turn "both" into "profile", so
+// check the shapes /invite actually receives.
+func TestInviteGrantArgument(t *testing.T) {
+	tests := []struct {
+		args      string
+		wantName  string
+		wantGrant invite.Grant
+	}{
+		{"anna", "anna", invite.GrantProfile},
+		{"anna vless", "anna", invite.GrantVLESS},
+		{"anna both", "anna", invite.GrantBoth},
+		{"  anna   BOTH  ", "anna", invite.GrantBoth},
+	}
+	for _, tt := range tests {
+		name, grantRaw, _ := strings.Cut(strings.TrimSpace(tt.args), " ")
+		name = strings.TrimSpace(name)
+		grant, err := invite.ParseGrant(grantRaw)
+		if err != nil {
+			t.Fatalf("ParseGrant(%q): %v", tt.args, err)
+		}
+		if name != tt.wantName || grant != tt.wantGrant {
+			t.Errorf("/invite %q → name %q grant %q, want %q / %q", tt.args, name, grant, tt.wantName, tt.wantGrant)
+		}
 	}
 }
