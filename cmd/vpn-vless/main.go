@@ -188,11 +188,13 @@ func cmdList(args []string) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tISSUED\tUUID")
+	// Writes to a tabwriter are buffered; the only error that matters is the
+	// one Flush reports, which is returned below.
+	_, _ = fmt.Fprintln(w, "NAME\tISSUED\tUUID")
 	for _, c := range clients {
 		// The UUID is a credential; print it truncated so a screenshot of the
 		// list does not hand out access.
-		fmt.Fprintf(w, "%s\t%s\t%s…\n", c.Name, c.Created, c.UUID[:8])
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s…\n", c.Name, c.Created, c.UUID[:8])
 	}
 	return w.Flush()
 }
