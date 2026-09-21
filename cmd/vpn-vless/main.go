@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,6 +43,8 @@ func main() {
 		err = cmdLink(os.Args[2:])
 	case "render":
 		err = cmdRender(os.Args[2:])
+	case "check-dest":
+		err = cmdCheckDest(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -69,6 +72,8 @@ Commands:
   list                 who has access
   link NAME            print someone's link again
   render               rebuild config.json from the stored state
+  check-dest HOST:PORT check whether a site can be used as the masquerade
+                       target (run it before changing -dest)
 
 Common flags:
   -dir DIR             state directory (default `+vless.DefaultDir+`)
@@ -98,6 +103,20 @@ func cmdInit(args []string) error {
 	if *address == "" {
 		return errors.New("init needs -address: the host or IP clients will dial")
 	}
+	// Check the target before adopting it. A bad one is not visible from the
+	// node afterwards — everything runs, the port answers, and only the person
+	// holding the link finds out that nothing works.
+	report, err := vless.CheckDest(context.Background(), *dest)
+	if err != nil {
+		return fmt.Errorf("checking %s: %w (pass a reachable -dest, or check this node's own connectivity)", *dest, err)
+	}
+	fmt.Print(report)
+	if !report.OK() {
+		return fmt.Errorf("%s cannot be used as a masquerade target — pick another with -dest "+
+			"(see docs/VLESS.md; `vpn-vless check-dest HOST:PORT` tries one without changing anything)", *dest)
+	}
+	fmt.Println()
+
 	n, err := vless.NewNode(*address, *dest, *sni, *fp, *label, *port)
 	if err != nil {
 		return err
@@ -118,6 +137,26 @@ func cmdInit(args []string) error {
 	fmt.Println()
 	fmt.Println("The private key stays in this directory and is not part of any backup we ship.")
 	fmt.Println("Start the service:  systemctl enable --now vpn-xray")
+	return nil
+}
+
+// cmdCheckDest probes a candidate masquerade target and changes nothing.
+func cmdCheckDest(args []string) error {
+	fs := flag.NewFlagSet("check-dest", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: vpn-vless check-dest HOST:PORT")
+	}
+	report, err := vless.CheckDest(context.Background(), fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	fmt.Print(report)
+	if !report.OK() {
+		return errors.New("not usable as a masquerade target")
+	}
 	return nil
 }
 

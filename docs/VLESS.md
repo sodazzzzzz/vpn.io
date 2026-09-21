@@ -108,19 +108,57 @@ node and is in no backup we ship — losing it means reissuing every link.
 
 REALITY works by forwarding any handshake it cannot authenticate to a real,
 third-party site, so a scanner gets that site's genuine TLS answer. `-dest` and
-`-sni` name it. The default is `www.microsoft.com:443`.
+`-sni` name it. The default is `www.apple.com:443`.
 
 A good choice:
 
 - speaks TLS 1.3 and HTTP/2;
+- **has a small certificate chain** — see below, this one bites;
 - is reachable and unremarkable from the networks your users are on — a site
   their ISP sees all day is better than one nobody there visits;
 - stays up, and is **not yours**: a domain connected to you ties the node back
   to you the moment anyone looks.
 
-Changing it later means every issued link is wrong (the SNI travels in the
-link), so decide before handing out access. To change it, edit
-`/etc/vpn-xray/node.json`, run `vpn-vless render`, and reissue every link.
+`init` checks the target before adopting it, and you can check any candidate
+without changing anything:
+
+```bash
+vpn-vless check-dest www.apple.com:443
+```
+
+#### The certificate-chain trap
+
+REALITY presents no certificate of its own: it relays the target's real
+handshake and substitutes only the signature. Those relayed records go through a
+fixed buffer, so a target whose certificates do not fit produces a handshake
+that never completes.
+
+The symptom is the worst kind. The node is healthy, the port answers, a scanner
+sees the real site — and the client says **connected while passing no traffic**.
+Nothing in the node's own logs says otherwise; the only one who finds out is the
+person holding the link.
+
+Measured (chain size as sent on the wire):
+
+| Target | Chain | Works |
+|---|---|---|
+| `www.microsoft.com` | 5879 B | **no** |
+| `dl.google.com` | ~4.9 KB | yes |
+| `www.bing.com` | ~4.0 KB | yes |
+| `www.apple.com` | 3231 B | yes |
+| `www.cloudflare.com` | ~2.6 KB | yes |
+
+`check-dest` refuses anything over 4096 bytes and warns past 3072.
+
+Changing the target later means every issued link is wrong (the SNI travels in
+the link), so decide before handing out access. To change it:
+
+```bash
+vpn-vless check-dest <new-target>:443     # first, confirm it is usable
+# edit "dest" and "serverNames" in /etc/vpn-xray/node.json
+vpn-vless render && systemctl restart vpn-xray
+vpn-vless link <name>                      # reissue every link
+```
 
 ## Handing out access
 
@@ -169,8 +207,10 @@ you would send a profile: a private chat, never a group.
 It works when the client shows a connected state and your IP, checked in a
 browser, is the node's. If it does not:
 
-- **Connects, no traffic** — usually the wrong SNI or a dead `dest`. Check
-  `curl -sI https://<the dest host>` from the node.
+- **Connects, no traffic** — first suspect the masquerade target:
+  `vpn-vless check-dest <the dest from node.json>`. An oversized certificate
+  chain produces exactly this (see [the trap](#the-certificate-chain-trap)).
+  After that, check the SNI in the link matches `serverNames` on the node.
 - **Never connects** — the link may predate a change to the node's keys or
   address, or the person may have been revoked. `vpn-vless list` settles it.
 - **Worked, then stopped** — check `systemctl status vpn-xray` first; a failed

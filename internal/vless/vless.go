@@ -34,15 +34,24 @@ const DefaultPort = 443
 // DefaultDest and DefaultServerName are the site a fresh node impersonates.
 //
 // The criteria (docs/VLESS.md repeats them for operators): a third-party site
-// that speaks TLS 1.3 and HTTP/2, is reachable and unremarkable from the
-// networks our users sit in, stays up, and is not ours — a domain connected to
-// us would tie the node back to us the moment anyone looks. This default is a
-// reasonable starting point, not a recommendation to keep forever; a node whose
-// users all sit behind one ISP may do better with something that ISP sees every
-// day.
+// that speaks TLS 1.3 and HTTP/2, has a SMALL certificate chain, is reachable
+// and unremarkable from the networks our users sit in, stays up, and is not
+// ours — a domain connected to us would tie the node back to us the moment
+// anyone looks.
+//
+// The chain size is not a detail. REALITY relays the target's own handshake to
+// the client, and a chain that does not fit the relayed buffer truncates it:
+// the handshake never completes, and the symptom is a client that says
+// "connected" and passes no traffic. www.microsoft.com was the first default
+// here and does exactly that — 8 KB of certificates against roughly 4 KB of
+// room. CheckDest measures this before a node adopts a target.
+//
+// This default is a reasonable starting point, not a recommendation to keep
+// forever; a node whose users all sit behind one ISP may do better with
+// something that ISP sees every day.
 const (
-	DefaultDest       = "www.microsoft.com:443"
-	DefaultServerName = "www.microsoft.com"
+	DefaultDest       = "www.apple.com:443"
+	DefaultServerName = "www.apple.com"
 )
 
 // DefaultFingerprint is the TLS fingerprint clients are told to imitate. It
